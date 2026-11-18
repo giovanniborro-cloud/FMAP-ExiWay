@@ -164,6 +164,7 @@ internal sealed class MainForm : Form
     private async Task ReceiveLoopAsync(BluetoothRfcommClient client, CancellationToken token)
     {
         var pending = new StringBuilder();
+        int expectedLength = 0;
         var buffer = new byte[1024];
         try
         {
@@ -176,11 +177,20 @@ internal sealed class MainForm : Form
                 {
                     char c = (char)buffer[i];
                     pending.Append(c);
-                    if (c == '*')
+                    if (pending.Length == 12)
+                        expectedLength = SchneiderProtocol.DeviceReplyLength(pending.ToString());
+                    if (expectedLength > 0 && pending.Length < expectedLength) continue;
+                    if (c == '*' || expectedLength > 0)
                     {
                         string frame = pending.ToString();
                         pending.Clear();
-                        Log("RX  " + frame);
+                        expectedLength = 0;
+                        if (c != '*')
+                        {
+                            Log("RX 201: terminatore mancante alla lunghezza dichiarata");
+                            continue;
+                        }
+                        Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame));
                         if (frame == "$0013230000*")
                         {
                             _authenticated = true;
