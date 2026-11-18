@@ -15,6 +15,10 @@ internal sealed class MainForm : Form
     private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
+    private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
+    private CancellationTokenSource? _addressScan;
+    private TaskCompletionSource<LampAddressStatus>? _addressReply;
+    private int _requestedAddress;
     private readonly Button _send = new() { Text = "Invia", AutoSize = true, Enabled = false };
     private readonly TextBox _command = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
     private readonly TextBox _results = CreateLogView(true);
@@ -76,6 +80,10 @@ internal sealed class MainForm : Form
         _benchCommands.Enabled = false;
         header.Controls.Add(_benchCommands);
 
+        var inventory = CreateCompactRow();
+        inventory.Controls.Add(_findAddresses);
+        header.Controls.Add(inventory);
+
         var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
         manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         manual.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -129,6 +137,11 @@ internal sealed class MainForm : Form
         _login.Click += (_, _) => Login();
         _autoLogin.CheckedChanged += (_, _) => Log(_autoLogin.Checked ? "Login automatico attivo." : "Login manuale attivo.");
         _send.Click += (_, _) => Send(_command.Text);
+        _findAddresses.Click += async (_, _) =>
+        {
+            if (_addressScan is { } activeScan) activeScan.Cancel();
+            else await FindAddressesAsync();
+        };
         FormClosing += (_, _) => Disconnect();
         Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
@@ -446,6 +459,82 @@ internal sealed class MainForm : Form
         finally { candidate?.Dispose(); }
     }
 
+    private async Task FindAddressesAsync()
+    {
+        var client = _client;
+        if (client is null || !client.Connected) return;
+
+        using var scan = new CancellationTokenSource();
+        _addressScan = scan;
+        _findAddresses.Text = "Annulla ricerca indirizzi";
+        _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
+        var addresses = new List<LampAddressStatus>();
+        Log("Ricerca indirizzi avviata sulle linee A e B.");
+        try
+        {
+            for (int index = 0; index < 128; index++)
+            {
+                scan.Token.ThrowIfCancellationRequested();
+                var target = new LampAddressStatus(index, false, false);
+                _status.Text = $"Ricerca {target.Address} ({index + 1}/128)";
+                _requestedAddress = index;
+                var reply = new TaskCompletionSource<LampAddressStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _addressReply = reply;
+                if (!Send(SchneiderProtocol.ReadLamp(index / 64, index % 64)))
+                    throw new IOException($"Richiesta {target.Address} non inviata.");
+
+                LampAddressStatus status;
+                try
+                {
+                    status = await reply.Task.WaitAsync(TimeSpan.FromSeconds(5), scan.Token);
+                }
+                catch (TimeoutException)
+                {
+                    throw new TimeoutException($"Nessuna risposta valida per {target.Address}.");
+                }
+                if (status.Assigned) addresses.Add(status);
+            }
+
+            scan.Token.ThrowIfCancellationRequested();
+            Log($"Ricerca completata: {addresses.Count} indirizzi registrati su 128 verificati.");
+            using var save = new SaveFileDialog
+            {
+                Title = "Esporta indirizzi in Excel", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
+                DefaultExt = "xlsx", AddExtension = true, InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                FileName = $"Indirizzi-Exiway-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
+            };
+            if (save.ShowDialog(this) == DialogResult.OK)
+            {
+                AddressWorkbook.Save(save.FileName, addresses);
+                Log($"Excel salvato: {save.FileName}");
+            }
+            else Log("Salvataggio Excel annullato.");
+        }
+        catch (OperationCanceledException)
+        {
+            Log("Ricerca indirizzi annullata.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TimeoutException)
+        {
+            Log($"Ricerca o salvataggio non completati: {ex.Message}");
+        }
+        finally
+        {
+            _addressReply = null;
+            _addressScan = null;
+            if (!IsDisposed && !Disposing)
+            {
+                _findAddresses.Text = "Trova indirizzi → Excel";
+                _scan.Enabled = true;
+                if (ReferenceEquals(_client, client) && client.Connected)
+                {
+                    _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = true;
+                    _status.Text = "Autenticazione 323: ACK ricevuto";
+                }
+            }
+        }
+    }
+
     private async Task ReceiveLoopAsync(BluetoothRfcommClient client, CancellationToken token)
     {
         var pending = new StringBuilder();
@@ -478,9 +567,12 @@ internal sealed class MainForm : Form
                         }
                         Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame), telegram: true);
                         Log(SchneiderProtocol.DescribeReply(frame));
-                        if (frame == "$0013230000*" && ReferenceEquals(_client, client))
+                        if (_addressReply is { } reply && SchneiderProtocol.TryReadLampStatus(frame, out var lamp) &&
+                            lamp.Index == _requestedAddress)
+                            reply.TrySetResult(lamp);
+                        if (frame == "$0013230000*" && ReferenceEquals(_client, client) && _addressScan is null)
                         {
-                            _lineCommands.Enabled = _benchCommands.Enabled = true;
+                            _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
                     }
@@ -510,7 +602,7 @@ internal sealed class MainForm : Form
             Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
             if (isLogin)
             {
-                _lineCommands.Enabled = _benchCommands.Enabled = false;
+                _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
                 Log("Login 323 inviato.");
             }
@@ -525,9 +617,10 @@ internal sealed class MainForm : Form
 
     private void Disconnect()
     {
+        _addressScan?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
-        _lineCommands.Enabled = _benchCommands.Enabled = false;
+        _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = false;
         _connect.Enabled = true;
         _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";

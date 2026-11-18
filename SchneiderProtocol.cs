@@ -1,5 +1,12 @@
 namespace SchneiderLoader;
 
+internal readonly record struct LampAddressStatus(int Index, bool Assigned, bool CommunicationError)
+{
+    public char Line => (char)('A' + Index / 64);
+    public int Number => Index % 64;
+    public string Address => FormattableString.Invariant($"{Line}{Number:00}");
+}
+
 internal static class SchneiderProtocol
 {
     // Proven by the PEAQ PET-101 capture on 2026-11-17:
@@ -51,16 +58,22 @@ internal static class SchneiderProtocol
         _ => throw new ArgumentOutOfRangeException(nameof(step))
     };
 
-    public static string DeviceStatus(string frame)
+    public static bool TryReadLampStatus(string frame, out LampAddressStatus status)
     {
-        if (frame.Length != 130 || !frame.AsSpan(0, 12).SequenceEqual("$00120100115"))
-            return string.Empty;
+        status = default;
+        if (frame.Length != 130 || !frame.AsSpan(0, 12).SequenceEqual("$00120100115") ||
+            !frame.EndsWith("00*", StringComparison.Ordinal))
+            return false;
 
-        int index = frame[12];
-        string address = FormattableString.Invariant($"{(char)('A' + index / 64)}{index % 64:00}");
-        string assigned = (frame[18] & 0x80) != 0 ? "indirizzo registrato" : "indirizzo libero";
-        string communication = frame[19] == 1 ? ", errore di comunicazione" : "";
-        return $"{address}: {assigned}{communication}.";
+        status = new LampAddressStatus(frame[12], (frame[18] & 0x80) != 0, frame[19] == 1);
+        return true;
+    }
+
+    public static string DeviceStatus(LampAddressStatus status)
+    {
+        string assigned = status.Assigned ? "indirizzo registrato" : "indirizzo libero";
+        string communication = status.CommunicationError ? ", errore di comunicazione" : "";
+        return $"{status.Address}: {assigned}{communication}.";
     }
 
     public static int BinaryReplyLength(string header)
@@ -93,7 +106,7 @@ internal static class SchneiderProtocol
             dataLength != frame.Length - 15)
             return $"Comando {command} · esito 00, formato dati non riconosciuto.";
 
-        if (command == "201" && dataLength == 115) return DeviceStatus(frame);
+        if (command == "201" && TryReadLampStatus(frame, out var lamp)) return DeviceStatus(lamp);
         if (command == "208" && dataLength == 77)
         {
             string name = frame.Substring(52, 21).TrimEnd(' ', '\0');
