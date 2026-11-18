@@ -44,19 +44,24 @@ internal sealed class MainForm : Form
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        var devices = CreateRow();
-        AddLabeled(devices, "Controller rilevato", _devices);
-        AlignAction(_scan);
-        AlignAction(_autoLogin);
-        devices.Controls.AddRange([_scan, _autoLogin]);
-        AddLabeled(devices, "MAC Bluetooth", _mac);
-        var auth = CreateRow();
-        AddLabeled(auth, "Nome NCU", _name);
-        AddLabeled(auth, "Password app", _password);
-        foreach (var button in new[] { _connect, _disconnect, _login })
-            AlignAction(button);
+        var devices = CreateCompactRow();
+        devices.Margin = Padding.Empty;
+        AddCompactField(devices, "Connessione Bluetooth", _devices);
+        var discovery = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty
+        };
+        discovery.Controls.AddRange([_scan, _autoLogin]);
+        devices.Controls.Add(discovery);
+        AddCompactField(devices, "MAC", _mac);
+        header.Controls.Add(devices);
+
+        var auth = CreateCompactRow();
+        AddCompactField(auth, "Nome NCU", _name);
+        AddCompactField(auth, "Password app", _password);
         auth.Controls.AddRange([_connect, _disconnect, _login]);
-        header.Controls.Add(CreateSection("Connessione Bluetooth", devices, auth));
+        header.Controls.Add(auth);
 
         _lineTarget.Items.AddRange(["A", "B", "A + B"]);
         _lineTarget.SelectedIndex = 0;
@@ -282,8 +287,6 @@ internal sealed class MainForm : Form
         row.Controls.Add(field);
     }
 
-    private static void AlignAction(Control control) => control.Margin = new Padding(5, 22, 5, 2);
-
     private static GroupBox CreateSection(string title, params Control[] rows)
     {
         var group = new GroupBox
@@ -326,14 +329,6 @@ internal sealed class MainForm : Form
         WordWrap = wrap, Dock = DockStyle.Fill, Font = new Font("Consolas", 10),
         BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle
     };
-
-    private static void AddLabeled(FlowLayoutPanel panel, string caption, Control control)
-    {
-        var group = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = new Padding(5, 2, 8, 2) };
-        group.Controls.Add(new Label { Text = caption, AutoSize = true });
-        group.Controls.Add(control);
-        panel.Controls.Add(group);
-    }
 
     private void Log(string text, bool telegram = false)
     {
