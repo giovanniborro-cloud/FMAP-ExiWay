@@ -134,9 +134,28 @@ internal sealed class MainForm : Form
         ];
         operation.Items.AddRange(options.Select(option => option.Label).ToArray());
         operation.SelectedIndex = 0;
+        string? loadedCommand = null;
+        void InvalidateCommand()
+        {
+            if (loadedCommand is null) return;
+            if (_command.Text == loadedCommand)
+            {
+                _command.Clear();
+                Log("Selezione modificata. Carica di nuovo il telegramma prima di inviarlo.");
+            }
+            loadedCommand = null;
+        }
+
+        line.SelectedIndexChanged += (_, _) => InvalidateCommand();
+        number.ValueChanged += (_, _) => InvalidateCommand();
+        operation.SelectedIndexChanged += (_, _) => InvalidateCommand();
+        fromHour.ValueChanged += (_, _) => InvalidateCommand();
+        toHour.ValueChanged += (_, _) => InvalidateCommand();
+
         load.Click += (_, _) =>
         {
-            _command.Text = options[operation.SelectedIndex].Format();
+            loadedCommand = options[operation.SelectedIndex].Format();
+            _command.Text = loadedCommand;
             _command.SelectAll();
             _command.Focus();
         };
