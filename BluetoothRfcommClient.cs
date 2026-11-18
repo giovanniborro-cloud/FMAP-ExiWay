@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -11,7 +12,7 @@ internal sealed class BluetoothRfcommClient : IDisposable
     private const int AfBth = 32;
     private const int SockStream = 1;
     private const int BthProtoRfcomm = 3;
-    private const int SockaddrBthLength = 40;
+    private const int SockaddrBthLength = 30;
     private const int SolSocket = 0xFFFF;
     private const int SoRcvTimeout = 0x1006;
     private const int SoSndTimeout = 0x1005;
@@ -101,10 +102,7 @@ internal sealed class BluetoothRfcommClient : IDisposable
 
         if (localRadio is ulong localAddress)
         {
-            byte[] local = new byte[SockaddrBthLength];
-            BitConverter.GetBytes((ushort)AfBth).CopyTo(local, 0);
-            BitConverter.GetBytes(localAddress).CopyTo(local, 8);
-            // serviceClassId=GUID_NULL and port=0 for a client socket
+            byte[] local = CreateSocketAddress(localAddress, 0, Guid.Empty);
             diagnostic?.Invoke($"{description}: bind con radio locale {FormatAddress(localAddress)}, porta=0");
             if (bind(_socket, local, local.Length) != 0)
             {
@@ -117,13 +115,7 @@ internal sealed class BluetoothRfcommClient : IDisposable
         }
         else diagnostic?.Invoke($"{description}: nessun bind esplicito, endpoint gestito da Windows");
 
-        byte[] sockaddr = new byte[SockaddrBthLength];
-        // Native SOCKADDR_BTH layout on Windows: addressFamily @0, btAddr @8,
-        // serviceClassId @16, port @32, size 40 (including alignment padding).
-        BitConverter.GetBytes((ushort)AfBth).CopyTo(sockaddr, 0);
-        BitConverter.GetBytes(address).CopyTo(sockaddr, 8);
-        serviceGuid.ToByteArray().CopyTo(sockaddr, 16);
-        BitConverter.GetBytes(port).CopyTo(sockaddr, 32);
+        byte[] sockaddr = CreateSocketAddress(address, port, serviceGuid);
         diagnostic?.Invoke($"Tentativo {description}: MAC={FormatAddress(address)}, porta={port}, UUID={serviceGuid}");
         if (connect(_socket, sockaddr, sockaddr.Length) != 0)
         {
@@ -137,6 +129,17 @@ internal sealed class BluetoothRfcommClient : IDisposable
         SetTimeout(SoRcvTimeout, 1000);
         SetTimeout(SoSndTimeout, 5000);
         return 0;
+    }
+
+    private static byte[] CreateSocketAddress(ulong address, uint port, Guid serviceGuid)
+    {
+        // ws2bth.h declares SOCKADDR_BTH with one-byte packing.
+        byte[] sockaddr = new byte[SockaddrBthLength];
+        BinaryPrimitives.WriteUInt16LittleEndian(sockaddr, AfBth);
+        BinaryPrimitives.WriteUInt64LittleEndian(sockaddr.AsSpan(2), address);
+        serviceGuid.TryWriteBytes(sockaddr.AsSpan(10, 16));
+        BinaryPrimitives.WriteUInt32LittleEndian(sockaddr.AsSpan(26), port);
+        return sockaddr;
     }
 
     private static List<ulong> GetLocalRadioAddresses(Action<string>? diagnostic)
