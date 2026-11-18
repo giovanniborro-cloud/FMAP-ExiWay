@@ -14,10 +14,7 @@ internal sealed class MainForm : Form
     private readonly Button _login = new() { Text = "Login 323", AutoSize = true, Enabled = false };
     private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly FlowLayoutPanel _lineCommands = new()
-    {
-        AutoSize = true, WrapContents = true, Dock = DockStyle.Fill, Enabled = false
-    };
+    private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
     private readonly Button _send = new() { Text = "Invia", AutoSize = true, Enabled = false };
     private readonly TextBox _command = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
     private readonly TextBox _results = CreateLogView(true);
@@ -63,15 +60,16 @@ internal sealed class MainForm : Form
 
         _lineTarget.Items.AddRange(["A", "B", "A + B"]);
         _lineTarget.SelectedIndex = 0;
-        AddLabeled(_lineCommands, "Destinazione", _lineTarget);
+        _lineCommands.Enabled = false;
+        AddCompactField(_lineCommands, "Tutta la linea", _lineTarget);
         AddLineCommand("Accendi al massimo", 5);
         AddLineCommand("Spegni", 0);
         AddLineCommand("Identifica", 240);
-        header.Controls.Add(CreateSection("Tutta la linea", _lineCommands));
+        header.Controls.Add(_lineCommands);
 
         _benchCommands = CreateBenchCommands();
         _benchCommands.Enabled = false;
-        header.Controls.Add(CreateSection("Banco prova", _benchCommands));
+        header.Controls.Add(_benchCommands);
 
         var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
         manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -133,18 +131,17 @@ internal sealed class MainForm : Form
 
     private Control CreateBenchCommands()
     {
-        var panel = CreateRow();
+        var panel = CreateCompactRow();
         var line = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 48 };
         line.Items.AddRange(["A", "B"]);
         line.SelectedIndex = 0;
         var number = new NumericUpDown { Minimum = 0, Maximum = 63, Width = 62 };
-        var function = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 165 };
+        var function = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 144 };
         function.Items.AddRange(["Indirizzamento", "Cancellazione", "Accensione e luce", "Diagnostica e test"]);
-        var operation = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 310 };
+        var operation = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 252, DropDownWidth = 330 };
         var fromHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
         var toHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
         var send = new Button { Text = "Invia comando", AutoSize = true };
-        AlignAction(send);
 
         int Line() => line.SelectedIndex;
         int Number() => (int)number.Value;
@@ -214,13 +211,17 @@ internal sealed class MainForm : Form
             loadedCommand = selected.Format();
             SendSelected(loadedCommand, $"{selected.Label} · selezione {line.Text}{Number():00}");
         };
-        AddLabeled(panel, "Linea banco prova", line);
-        AddLabeled(panel, "Numero 0–63", number);
-        AddLabeled(panel, "Funzione", function);
-        AddLabeled(panel, "Operazione", operation);
-        var hours = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Visible = false };
-        AddLabeled(hours, "Ora inizio", fromHour);
-        AddLabeled(hours, "Ora fine", toHour);
+        AddCompactField(panel, "Banco prova", line);
+        AddCompactField(panel, "Numero", number);
+        AddCompactField(panel, "Funzione", function);
+        AddCompactField(panel, "Operazione", operation);
+        var hours = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Visible = false, Margin = Padding.Empty
+        };
+        AddCompactField(hours, "Inizio", fromHour);
+        AddCompactField(hours, "Fine", toHour);
         operation.SelectedIndexChanged += (_, _) =>
             hours.Visible = operation.SelectedItem is string label && label == setSafeTime;
         function.SelectedIndexChanged += (_, _) =>
@@ -239,7 +240,6 @@ internal sealed class MainForm : Form
     private void AddLineCommand(string label, int operation)
     {
         var button = new Button { Text = label, AutoSize = true };
-        AlignAction(button);
         button.Click += (_, _) =>
         {
             if (_lineTarget.SelectedIndex != 1 &&
@@ -262,6 +262,25 @@ internal sealed class MainForm : Form
     {
         AutoSize = true, WrapContents = true, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 3)
     };
+
+    private static FlowLayoutPanel CreateCompactRow() => new()
+    {
+        AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true,
+        Dock = DockStyle.Top, BackColor = Color.White, Padding = new Padding(5, 2, 5, 2),
+        Margin = new Padding(0, 0, 0, 4)
+    };
+
+    private static void AddCompactField(FlowLayoutPanel row, string caption, Control control)
+    {
+        var field = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = new Padding(2, 0, 4, 0)
+        };
+        field.Controls.Add(new Label { Text = caption, AutoSize = true, Anchor = AnchorStyles.Left });
+        field.Controls.Add(control);
+        row.Controls.Add(field);
+    }
 
     private static void AlignAction(Control control) => control.Margin = new Padding(5, 22, 5, 2);
 
