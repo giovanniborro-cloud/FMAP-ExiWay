@@ -6,7 +6,7 @@ namespace SchneiderLoader;
 
 internal static class AddressWorkbook
 {
-    public static void Save(string path, IReadOnlyList<LampAddressStatus> addresses)
+    public static void Save(string path, IReadOnlyList<LampAddressStatus> addresses, bool includeLampStatus)
     {
         XNamespace sheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
         XNamespace links = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -15,16 +15,22 @@ internal static class AddressWorkbook
 
         XElement Text(string value) => new(sheet + "c", new XAttribute("t", "inlineStr"),
             new XElement(sheet + "is", new XElement(sheet + "t", value)));
-        var data = new XElement(sheet + "sheetData",
-            new XElement(sheet + "row", Text("Linea"), Text("Numero"), Text("Indirizzo"), Text("Stato comunicazione")));
+        var headers = new XElement(sheet + "row", Text("Linea"), Text("Numero"), Text("Indirizzo"), Text("Stato comunicazione"));
+        if (includeLampStatus)
+            headers.Add(Text("Guasti registrati"), Text("Modalità emergenza (codice)"), Text("Stato emergenza (codice)"));
 
+        var data = new XElement(sheet + "sheetData", headers);
         foreach (var address in addresses)
         {
-            data.Add(new XElement(sheet + "row",
+            var row = new XElement(sheet + "row",
                 Text(address.Line.ToString()),
                 new XElement(sheet + "c", new XElement(sheet + "v", address.Number.ToString(CultureInfo.InvariantCulture))),
                 Text(address.Address),
-                Text(address.CommunicationError ? "Errore segnalato" : "Nessun errore segnalato")));
+                Text(address.CommunicationError ? "Errore segnalato" : "Nessun errore segnalato"));
+            if (includeLampStatus)
+                row.Add(Text(SchneiderProtocol.DescribeLampFaults(address.Faults)),
+                    Text($"0x{address.EmergencyMode:X2}"), Text($"0x{address.EmergencyStatus:X2}"));
+            data.Add(row);
         }
 
         string temporary = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, $".{Guid.NewGuid():N}.tmp");
@@ -52,15 +58,16 @@ internal static class AddressWorkbook
                 Add("_rels/.rels", new XElement(relationships + "Relationships",
                     Relationship("officeDocument", "xl/workbook.xml")));
                 Add("xl/workbook.xml", new XElement(sheet + "workbook",
-                    new XElement(sheet + "sheets", new XElement(sheet + "sheet", new XAttribute("name", "Indirizzi"),
+                    new XElement(sheet + "sheets", new XElement(sheet + "sheet", new XAttribute("name", includeLampStatus ? "Stato lampade" : "Indirizzi"),
                         new XAttribute("sheetId", 1), new XAttribute(links + "id", "rId1")))));
                 Add("xl/_rels/workbook.xml.rels", new XElement(relationships + "Relationships",
                     Relationship("worksheet", "worksheets/sheet1.xml")));
-                Add("xl/worksheets/sheet1.xml", new XElement(sheet + "worksheet",
-                    new XElement(sheet + "cols",
-                        new XElement(sheet + "col", new XAttribute("min", 1), new XAttribute("max", 3), new XAttribute("width", 13), new XAttribute("customWidth", 1)),
-                        new XElement(sheet + "col", new XAttribute("min", 4), new XAttribute("max", 4), new XAttribute("width", 28), new XAttribute("customWidth", 1))),
-                    data));
+                XElement Column(int first, int last, int width) => new(sheet + "col",
+                    new XAttribute("min", first), new XAttribute("max", last),
+                    new XAttribute("width", width), new XAttribute("customWidth", 1));
+                var columns = new XElement(sheet + "cols", Column(1, 3, 13), Column(4, 4, 28));
+                if (includeLampStatus) columns.Add(Column(5, 5, 65), Column(6, 7, 32));
+                Add("xl/worksheets/sheet1.xml", new XElement(sheet + "worksheet", columns, data));
             }
             File.Move(temporary, path, overwrite: true);
         }

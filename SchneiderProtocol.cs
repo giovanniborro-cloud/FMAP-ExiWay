@@ -1,6 +1,7 @@
 namespace SchneiderLoader;
 
-internal readonly record struct LampAddressStatus(int Index, bool Assigned, bool CommunicationError)
+internal readonly record struct LampAddressStatus(int Index, bool Assigned, bool CommunicationError,
+    byte Faults = 0, byte EmergencyMode = 0, byte EmergencyStatus = 0)
 {
     public char Line => (char)('A' + Index / 64);
     public int Number => Index % 64;
@@ -58,6 +59,22 @@ internal static class SchneiderProtocol
         _ => throw new ArgumentOutOfRangeException(nameof(step))
     };
 
+    private static readonly string[] FaultNames =
+    [
+        "Guasto circuito",
+        "Autonomia batteria insufficiente",
+        "Guasto batteria",
+        "Guasto lampada di emergenza",
+        "Test funzionale in ritardo",
+        "Test autonomia in ritardo",
+        "Test funzionale fallito",
+        "Test autonomia fallito"
+    ];
+
+    public static string DescribeLampFaults(byte faults) => faults == 0
+        ? "Nessun guasto registrato"
+        : string.Join("; ", FaultNames.Where((_, bit) => (faults & (1 << bit)) != 0));
+
     public static bool TryReadLampStatus(string frame, out LampAddressStatus status)
     {
         status = default;
@@ -65,7 +82,9 @@ internal static class SchneiderProtocol
             !frame.EndsWith("00*", StringComparison.Ordinal))
             return false;
 
-        status = new LampAddressStatus(frame[12], (frame[18] & 0x80) != 0, frame[19] == 1);
+        // eCommission stores mode, status and fault flags in payload bytes 38–40.
+        status = new LampAddressStatus(frame[12], (frame[18] & 0x80) != 0, frame[19] == 1,
+            (byte)frame[52], (byte)frame[50], (byte)frame[51]);
         return true;
     }
 

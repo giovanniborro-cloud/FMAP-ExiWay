@@ -16,6 +16,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
     private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
+    private readonly Button _lampStatuses = new() { Text = "Stato lampade → Excel", AutoSize = true, Enabled = false };
     private CancellationTokenSource? _addressScan;
     private TaskCompletionSource<LampAddressStatus>? _addressReply;
     private int _requestedAddress;
@@ -81,7 +82,7 @@ internal sealed class MainForm : Form
         header.Controls.Add(_benchCommands);
 
         var inventory = CreateCompactRow();
-        inventory.Controls.Add(_findAddresses);
+        inventory.Controls.AddRange([_findAddresses, _lampStatuses]);
         header.Controls.Add(inventory);
 
         var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
@@ -137,11 +138,8 @@ internal sealed class MainForm : Form
         _login.Click += (_, _) => Login();
         _autoLogin.CheckedChanged += (_, _) => Log(_autoLogin.Checked ? "Login automatico attivo." : "Login manuale attivo.");
         _send.Click += (_, _) => Send(_command.Text);
-        _findAddresses.Click += async (_, _) =>
-        {
-            if (_addressScan is { } activeScan) activeScan.Cancel();
-            else await FindAddressesAsync();
-        };
+        _findAddresses.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false);
+        _lampStatuses.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: true);
         FormClosing += (_, _) => Disconnect();
         Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
@@ -459,17 +457,27 @@ internal sealed class MainForm : Form
         finally { candidate?.Dispose(); }
     }
 
-    private async Task FindAddressesAsync()
+    private async Task ToggleInventoryAsync(bool includeLampStatus)
+    {
+        if (_addressScan is { } activeScan) activeScan.Cancel();
+        else await ExportInventoryAsync(includeLampStatus);
+    }
+
+    private async Task ExportInventoryAsync(bool includeLampStatus)
     {
         var client = _client;
         if (client is null || !client.Connected) return;
 
         using var scan = new CancellationTokenSource();
         _addressScan = scan;
-        _findAddresses.Text = "Annulla ricerca indirizzi";
+        var activeButton = includeLampStatus ? _lampStatuses : _findAddresses;
+        string originalLabel = activeButton.Text;
+        activeButton.Text = "Annulla ricerca";
+        (includeLampStatus ? _findAddresses : _lampStatuses).Enabled = false;
+        string reportTitle = includeLampStatus ? "Stato lampade" : "Indirizzi";
         _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
         var addresses = new List<LampAddressStatus>();
-        Log("Ricerca indirizzi avviata sulle linee A e B.");
+        Log($"{reportTitle}: lettura avviata sulle linee A e B.");
         try
         {
             for (int index = 0; index < 128; index++)
@@ -499,13 +507,13 @@ internal sealed class MainForm : Form
             Log($"Ricerca completata: {addresses.Count} indirizzi registrati su 128 verificati.");
             using var save = new SaveFileDialog
             {
-                Title = "Esporta indirizzi in Excel", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
+                Title = $"Esporta in Excel · {reportTitle}", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
                 DefaultExt = "xlsx", AddExtension = true, InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                FileName = $"Indirizzi-Exiway-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
+                FileName = $"{reportTitle.Replace(' ', '-')}-Exiway-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
             };
             if (save.ShowDialog(this) == DialogResult.OK)
             {
-                AddressWorkbook.Save(save.FileName, addresses);
+                AddressWorkbook.Save(save.FileName, addresses, includeLampStatus);
                 Log($"Excel salvato: {save.FileName}");
             }
             else Log("Salvataggio Excel annullato.");
@@ -524,11 +532,11 @@ internal sealed class MainForm : Form
             _addressScan = null;
             if (!IsDisposed && !Disposing)
             {
-                _findAddresses.Text = "Trova indirizzi → Excel";
+                activeButton.Text = originalLabel;
                 _scan.Enabled = true;
                 if (ReferenceEquals(_client, client) && client.Connected)
                 {
-                    _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = true;
+                    _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
                     _status.Text = "Autenticazione 323: ACK ricevuto";
                 }
             }
@@ -572,7 +580,7 @@ internal sealed class MainForm : Form
                             reply.TrySetResult(lamp);
                         if (frame == "$0013230000*" && ReferenceEquals(_client, client) && _addressScan is null)
                         {
-                            _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = true;
+                            _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
                     }
@@ -602,7 +610,7 @@ internal sealed class MainForm : Form
             Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
             if (isLogin)
             {
-                _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = false;
+                _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
                 Log("Login 323 inviato.");
             }
@@ -620,7 +628,7 @@ internal sealed class MainForm : Form
         _addressScan?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
-        _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = false;
+        _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = false;
         _connect.Enabled = true;
         _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";
