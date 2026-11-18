@@ -52,6 +52,8 @@ internal sealed class MainForm : Form
         AddLineCommand("Identifica", 240);
         header.Controls.Add(_lineCommands);
 
+        header.Controls.Add(CreateBenchCommands());
+
         var commands = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
         commands.Controls.AddRange([_read, _next]);
         AddLabeled(commands, "Telegramma ASCII ($...*)", _command);
@@ -82,6 +84,72 @@ internal sealed class MainForm : Form
         FormClosing += (_, _) => Disconnect();
         Log("Pronto. Avvia 'Cerca NCU', seleziona il controller e connettiti. In alternativa inserisci il MAC Bluetooth manualmente.");
         Log("La password Schneider viene inviata con comando 323 DOPO la connessione Bluetooth; non e' il PIN di Windows.");
+    }
+
+    private Control CreateBenchCommands()
+    {
+        var panel = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
+        var line = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 48 };
+        line.Items.AddRange(["A", "B"]);
+        line.SelectedIndex = 0;
+        var number = new NumericUpDown { Minimum = 0, Maximum = 63, Width = 62 };
+        var operation = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 310 };
+        var fromHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
+        var toHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
+        var load = new Button { Text = "Carica telegramma", AutoSize = true, Margin = new Padding(5, 19, 5, 2) };
+
+        int Line() => line.SelectedIndex;
+        int Number() => (int)number.Value;
+        string Lamp(int action) => SchneiderProtocol.LampCommand(Line(), Number(), action);
+        string Address(int action) => SchneiderProtocol.SequentialAddress(Line(), action, action == 3 ? 0 : Number());
+        string Clear(int step) => SchneiderProtocol.ClearLampStep(Line(), Number(), step);
+
+        const string setSafeTime = "Imposta finestra test consentita (302)";
+        (string Label, Func<string> Format)[] options =
+        [
+            ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number())),
+            ("Accendi lampada al massimo (017)", () => Lamp(5)),
+            ("Spegni lampada (017)", () => Lamp(0)),
+            ("Identifica lampada una volta (017)", () => Lamp(240)),
+            ("Accendi tutta la linea al massimo (017)", () => SchneiderProtocol.LineCommand(Line(), 5)),
+            ("Spegni tutta la linea (017)", () => SchneiderProtocol.LineCommand(Line(), 0)),
+            ("Identifica tutta la linea una volta (017)", () => SchneiderProtocol.LineCommand(Line(), 240)),
+            ("Indirizzamento 1 · Avvia (133)", () => Address(1)),
+            ("Indirizzamento 2 · Proponi il numero (133)", () => Address(2)),
+            ("Indirizzamento 3 · Termina (133)", () => Address(3)),
+            ("Leggi prossimo numero (134)", () => SchneiderProtocol.Command(134)),
+            ("Clear 1 · Prepara cancellazione (130)", () => Clear(1)),
+            ("Clear 2 · Cancella numero lampada (130)", () => Clear(2)),
+            ("Clear 3 · Interroga lampada (130)", () => Clear(3)),
+            ("Avvia test funzionale (017)", () => Lamp(227)),
+            ("Avvia test autonomia (017)", () => Lamp(228)),
+            ("Interrompi test (017)", () => Lamp(229)),
+            ("Rest (017)", () => Lamp(224)),
+            ("Inhibit (017)", () => Lamp(225)),
+            ("Re-Light (017)", () => Lamp(226)),
+            ("Leggi informazioni centralina (208)", () => SchneiderProtocol.Command(208)),
+            ("Leggi orologio centralina (008)", () => SchneiderProtocol.Command(8)),
+            ("Leggi finestra test consentita (205)", () => SchneiderProtocol.Command(205)),
+            (setSafeTime, () => SchneiderProtocol.SafeTime((int)fromHour.Value, (int)toHour.Value))
+        ];
+        operation.Items.AddRange(options.Select(option => option.Label).ToArray());
+        operation.SelectedIndex = 0;
+        load.Click += (_, _) =>
+        {
+            _command.Text = options[operation.SelectedIndex].Format();
+            _command.SelectAll();
+            _command.Focus();
+        };
+        AddLabeled(panel, "Linea banco prova", line);
+        AddLabeled(panel, "Numero 0–63", number);
+        AddLabeled(panel, "Operazione", operation);
+        var hours = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Visible = false };
+        AddLabeled(hours, "Ora inizio", fromHour);
+        AddLabeled(hours, "Ora fine", toHour);
+        operation.SelectedIndexChanged += (_, _) => hours.Visible = options[operation.SelectedIndex].Label == setSafeTime;
+        panel.Controls.Add(hours);
+        panel.Controls.Add(load);
+        return panel;
     }
 
     private void AddLineCommand(string label, int operation)
@@ -206,6 +274,8 @@ internal sealed class MainForm : Form
                             continue;
                         }
                         Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame));
+                        string deviceStatus = SchneiderProtocol.DeviceStatus(frame);
+                        if (deviceStatus.Length > 0) Log(deviceStatus);
                         if (frame == "$0013230000*")
                         {
                             if (!IsDisposed) BeginInvoke(new Action(() =>

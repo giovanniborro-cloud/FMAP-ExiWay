@@ -19,7 +19,44 @@ internal static class SchneiderProtocol
     }
 
     public static string LineACommand(int operation) =>
-        Command(17, FormattableString.Invariant($"0000000{operation:000}"));
+        LineCommand(0, operation);
+
+    public static string LineCommand(int line, int operation) =>
+        Command(17, FormattableString.Invariant($"{line:00}00000{operation:000}"));
+
+    public static string SafeTime(int startHour, int endHour) =>
+        Command(302, FormattableString.Invariant($"{startHour * 60:x4}{endHour * 60:x4}"));
+
+    public static string LampCommand(int line, int address, int operation) =>
+        Command(17, FormattableString.Invariant($"{line:00}02{address:000}{operation:000}"));
+
+    public static string ReadLamp(int line, int address) =>
+        Command(201, FormattableString.Invariant($"{line * 64 + address:000}"));
+
+    public static string ClearLampStep(int line, int address, int step)
+    {
+        int daliAddress = (address << 1) | 1;
+        string payload = step switch
+        {
+            1 => "A3A3FF000",
+            2 => FormattableString.Invariant($"A3{daliAddress:X2}80001"),
+            3 => FormattableString.Invariant($"A3{daliAddress:X2}91000"),
+            _ => throw new ArgumentOutOfRangeException(nameof(step))
+        };
+        return Command(130, FormattableString.Invariant($"{line}{payload}"));
+    }
+
+    public static string DeviceStatus(string frame)
+    {
+        if (frame.Length != 130 || !frame.AsSpan(0, 12).SequenceEqual("$00120100115"))
+            return string.Empty;
+
+        int index = frame[12];
+        string address = FormattableString.Invariant($"{(char)('A' + index / 64)}{index % 64:00}");
+        string assigned = (frame[18] & 0x80) != 0 ? "indirizzo registrato" : "indirizzo libero";
+        string communication = frame[19] == 1 ? ", errore di comunicazione" : "";
+        return $"{address}: {assigned}{communication}.";
+    }
 
     public static int DeviceReplyLength(string header)
     {
@@ -41,6 +78,6 @@ internal static class SchneiderProtocol
     {
         if (line is < 0 or > 999 || operation is < 1 or > 3 || nextAddress is < 0 or > 63)
             throw new ArgumentOutOfRangeException(nameof(nextAddress), "Linea 0..999, operazione 1..3, indirizzo 0..63");
-        return Command(133, $"{line:000}{operation:000}{nextAddress:000}");
+        return Command(133, FormattableString.Invariant($"{line:000}{operation:000}{nextAddress:000}"));
     }
 }
