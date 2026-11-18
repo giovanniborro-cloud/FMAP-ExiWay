@@ -46,6 +46,14 @@ internal static class SchneiderProtocol
         return Command(130, FormattableString.Invariant($"{line}{payload}"));
     }
 
+    public static string ClearLineStep(int line, int step) => step switch
+    {
+        1 => ClearLampStep(line, 0, 1),
+        2 => Command(130, FormattableString.Invariant($"{line}A3FF80001")),
+        3 => Command(45, FormattableString.Invariant($"{line + 1}")),
+        _ => throw new ArgumentOutOfRangeException(nameof(step))
+    };
+
     public static string DeviceStatus(string frame)
     {
         if (frame.Length != 130 || !frame.AsSpan(0, 12).SequenceEqual("$00120100115"))
