@@ -1,0 +1,6 @@
+1. Aprire "x64 Native Tools Command Prompt for VS 2022" o una Developer Command Prompt di Visual Studio.
+2. Spostarsi nella cartella estratta con cd /d "<cartella>".
+3. Compilare: cl /nologo /EHsc /W4 Exitwai2_RfcommTest.cpp /Fe:Exitwai2_RfcommTest.exe
+4. Eseguire: Exitwai2_RfcommTest.exe
+5. Inviare il testo stampato dall'eseguibile.
+Il test usa il MAC 00:80:E1:B0:04:C0, non invia alcun comando Schneider e non modifica le impostazioni Bluetooth.
