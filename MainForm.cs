@@ -7,64 +7,96 @@ internal sealed class MainForm : Form
     private readonly ComboBox _devices = new() { Width = 285, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _mac = new() { Width = 160, PlaceholderText = "AA:BB:CC:DD:EE:FF" };
     private readonly TextBox _name = new() { Width = 135, Text = "NCU33fab915" };
-    private readonly TextBox _password = new() { Width = 125, Text = "33fab915" };
+    private readonly TextBox _password = new() { Width = 130, Text = "33fab915", UseSystemPasswordChar = true };
     private readonly Button _scan = new() { Text = "Cerca NCU", AutoSize = true };
     private readonly Button _connect = new() { Text = "Connetti RFCOMM 1", AutoSize = true };
     private readonly Button _disconnect = new() { Text = "Disconnetti", AutoSize = true, Enabled = false };
     private readonly Button _login = new() { Text = "Login 323", AutoSize = true, Enabled = false };
-    private readonly Button _read = new() { Text = "Lettura 007", AutoSize = true, Enabled = false };
-    private readonly Button _next = new() { Text = "Leggi 134", AutoSize = true, Enabled = false };
+    private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
+    private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly FlowLayoutPanel _lineCommands = new()
     {
         AutoSize = true, WrapContents = true, Dock = DockStyle.Fill, Enabled = false
     };
-    private readonly Button _send = new() { Text = "Invia TX", AutoSize = true, Enabled = false };
-    private readonly TextBox _command = new() { Width = 530, Text = "$00113400000*" };
-    private readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
-        WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
+    private readonly Button _send = new() { Text = "Invia", AutoSize = true, Enabled = false };
+    private readonly TextBox _command = new() { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
+    private readonly TextBox _results = CreateLogView(true);
+    private readonly TextBox _telegrams = CreateLogView(false);
+    private readonly string _logPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OVA-GEN3", "Logs", $"sessione-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Environment.ProcessId}.log");
+    private Control _benchCommands = null!;
+    private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
 
     public MainForm()
     {
-        Text = "OVA-GEN3 / Exitwai2 — Schneider Exiway Bluetooth RFCOMM";
+        Text = "OVA-GEN3 · Banco prova Exiway";
         StartPosition = FormStartPosition.CenterScreen;
-        Size = new Size(1070, 650);
-        MinimumSize = new Size(800, 500);
+        Font = new Font("Segoe UI", 10);
+        BackColor = Color.FromArgb(245, 247, 250);
+        ForeColor = Color.FromArgb(27, 43, 59);
+        Size = new Size(1180, 800);
+        MinimumSize = new Size(860, 680);
 
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(10) };
-        var devices = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
-        AddLabeled(devices, "Controller rilevati", _devices);
-        devices.Controls.Add(_scan);
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(12, 8, 12, 4)
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var devices = CreateRow();
+        AddLabeled(devices, "Controller rilevato", _devices);
+        AlignAction(_scan);
+        AlignAction(_autoLogin);
+        devices.Controls.AddRange([_scan, _autoLogin]);
         AddLabeled(devices, "MAC Bluetooth", _mac);
-        header.Controls.Add(devices);
-
-        var auth = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
+        var auth = CreateRow();
         AddLabeled(auth, "Nome NCU", _name);
-        AddLabeled(auth, "Password app (8 caratteri)", _password);
+        AddLabeled(auth, "Password app", _password);
+        foreach (var button in new[] { _connect, _disconnect, _login })
+            AlignAction(button);
         auth.Controls.AddRange([_connect, _disconnect, _login]);
-        header.Controls.Add(auth);
+        header.Controls.Add(CreateSection("Connessione Bluetooth", devices, auth));
 
-        _lineCommands.Controls.Add(new Label { Text = "Tutta la linea A", AutoSize = true, Margin = new Padding(5, 8, 8, 0) });
+        _lineTarget.Items.AddRange(["A", "B", "A + B"]);
+        _lineTarget.SelectedIndex = 0;
+        AddLabeled(_lineCommands, "Destinazione", _lineTarget);
         AddLineCommand("Accendi al massimo", 5);
         AddLineCommand("Spegni", 0);
         AddLineCommand("Identifica", 240);
-        header.Controls.Add(_lineCommands);
+        header.Controls.Add(CreateSection("Tutta la linea", _lineCommands));
 
-        header.Controls.Add(CreateBenchCommands());
+        _benchCommands = CreateBenchCommands();
+        _benchCommands.Enabled = false;
+        header.Controls.Add(CreateSection("Banco prova", _benchCommands));
 
-        var commands = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
-        commands.Controls.AddRange([_read, _next]);
-        AddLabeled(commands, "Telegramma ASCII ($...*)", _command);
-        commands.Controls.Add(_send);
-        header.Controls.Add(commands);
-        var caution = new Label { AutoSize = true, Text = "Test: RFCOMM Bluetooth Classic canale 1; nessuna porta COM/TCP. Comandi di scrittura agiscono sul controller reale.", ForeColor = Color.DarkRed };
-        header.Controls.Add(caution);
+        var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
+        manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        manual.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        manual.Controls.Add(_command, 0, 0);
+        manual.Controls.Add(_send, 1, 0);
+        header.Controls.Add(CreateSection("Telegramma manuale", manual));
 
-        var footer = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(10) };
-        footer.Controls.Add(_status);
-        Controls.Add(_log);
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterWidth = 7,
+            Margin = new Padding(0), BackColor = BackColor
+        };
+        split.Size = new Size(800, 300);
+        split.SplitterDistance = 130;
+        split.Panel1.Controls.Add(CreateLogSection("Risultati e operazioni", _results));
+        split.Panel2.Controls.Add(CreateLogSection("Telegrammi TX / RX", _telegrams));
+
+        var footer = CreateRow();
+        footer.Dock = DockStyle.Bottom;
+        footer.Padding = new Padding(12, 4, 12, 4);
+        var logFile = new LinkLabel { Text = "Apri log sessione", AutoSize = true, Margin = new Padding(18, 3, 3, 3) };
+        logFile.LinkClicked += (_, _) => OpenLog();
+        footer.Controls.AddRange([_status, logFile]);
+        Controls.Add(split);
         Controls.Add(header);
         Controls.Add(footer);
 
@@ -77,18 +109,17 @@ internal sealed class MainForm : Form
         };
         _connect.Click += async (_, _) => await ConnectAsync();
         _disconnect.Click += (_, _) => Disconnect();
-        _login.Click += (_, _) => Send(SchneiderProtocol.Login(_password.Text));
-        _read.Click += (_, _) => Send(SchneiderProtocol.Command(7));
-        _next.Click += (_, _) => Send(SchneiderProtocol.Command(134));
+        _login.Click += (_, _) => Login();
+        _autoLogin.CheckedChanged += (_, _) => Log(_autoLogin.Checked ? "Login automatico attivo." : "Login manuale attivo.");
         _send.Click += (_, _) => Send(_command.Text);
         FormClosing += (_, _) => Disconnect();
-        Log("Pronto. Avvia 'Cerca NCU', seleziona il controller e connettiti. In alternativa inserisci il MAC Bluetooth manualmente.");
-        Log("La password Schneider viene inviata con comando 323 DOPO la connessione Bluetooth; non e' il PIN di Windows.");
+        Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
+        Log($"File di sessione: {_logPath}");
     }
 
     private Control CreateBenchCommands()
     {
-        var panel = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
+        var panel = CreateRow();
         var line = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 48 };
         line.Items.AddRange(["A", "B"]);
         line.SelectedIndex = 0;
@@ -98,7 +129,8 @@ internal sealed class MainForm : Form
         var operation = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 310 };
         var fromHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
         var toHour = new NumericUpDown { Minimum = 0, Maximum = 23, Width = 50 };
-        var load = new Button { Text = "Carica telegramma", AutoSize = true, Margin = new Padding(5, 19, 5, 2) };
+        var send = new Button { Text = "Invia comando", AutoSize = true };
+        AlignAction(send);
 
         int Line() => line.SelectedIndex;
         int Number() => (int)number.Value;
@@ -113,7 +145,6 @@ internal sealed class MainForm : Form
                 ("Avvia sessione (133 / 001)", () => Address(1)),
                 ("Proponi numero per una lampada (133 / 002)", () => Address(2)),
                 ("Termina sessione (133 / 003)", () => Address(3)),
-                ("Leggi prossimo numero (134)", () => SchneiderProtocol.Command(134)),
                 ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()))
             ],
             [
@@ -153,7 +184,6 @@ internal sealed class MainForm : Form
             if (_command.Text == loadedCommand)
             {
                 _command.Clear();
-                Log("Selezione modificata. Carica di nuovo il telegramma prima di inviarlo.");
             }
             loadedCommand = null;
         }
@@ -164,12 +194,11 @@ internal sealed class MainForm : Form
         fromHour.ValueChanged += (_, _) => InvalidateCommand();
         toHour.ValueChanged += (_, _) => InvalidateCommand();
 
-        load.Click += (_, _) =>
+        send.Click += (_, _) =>
         {
-            loadedCommand = groups[function.SelectedIndex][operation.SelectedIndex].Format();
-            _command.Text = loadedCommand;
-            _command.SelectAll();
-            _command.Focus();
+            var selected = groups[function.SelectedIndex][operation.SelectedIndex];
+            loadedCommand = selected.Format();
+            SendSelected(loadedCommand, $"{selected.Label} · selezione {line.Text}{Number():00}");
         };
         AddLabeled(panel, "Linea banco prova", line);
         AddLabeled(panel, "Numero 0–63", number);
@@ -189,16 +218,66 @@ internal sealed class MainForm : Form
         };
         function.SelectedIndex = 0;
         panel.Controls.Add(hours);
-        panel.Controls.Add(load);
+        panel.Controls.Add(send);
         return panel;
     }
 
     private void AddLineCommand(string label, int operation)
     {
         var button = new Button { Text = label, AutoSize = true };
-        button.Click += (_, _) => Send(SchneiderProtocol.LineACommand(operation));
+        AlignAction(button);
+        button.Click += (_, _) =>
+        {
+            if (_lineTarget.SelectedIndex != 1 &&
+                !SendSelected(SchneiderProtocol.LineCommand(0, operation), $"{label} · tutta la linea A"))
+                return;
+            if (_lineTarget.SelectedIndex != 0)
+                SendSelected(SchneiderProtocol.LineCommand(1, operation), $"{label} · tutta la linea B");
+        };
         _lineCommands.Controls.Add(button);
     }
+
+    private bool SendSelected(string frame, string operation)
+    {
+        _command.Text = frame;
+        Log(operation);
+        return Send(frame);
+    }
+
+    private static FlowLayoutPanel CreateRow() => new()
+    {
+        AutoSize = true, WrapContents = true, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 3)
+    };
+
+    private static void AlignAction(Control control) => control.Margin = new Padding(5, 22, 5, 2);
+
+    private static GroupBox CreateSection(string title, params Control[] rows)
+    {
+        var group = new GroupBox
+        {
+            Text = title, Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8, 5, 8, 7),
+            Margin = new Padding(0, 0, 0, 4), BackColor = Color.White
+        };
+        var stack = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1 };
+        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        foreach (var row in rows) stack.Controls.Add(row);
+        group.Controls.Add(stack);
+        return group;
+    }
+
+    private static GroupBox CreateLogSection(string title, TextBox view)
+    {
+        var group = new GroupBox { Text = title, Dock = DockStyle.Fill, Padding = new Padding(8), BackColor = Color.White };
+        group.Controls.Add(view);
+        return group;
+    }
+
+    private static TextBox CreateLogView(bool wrap) => new()
+    {
+        Multiline = true, ReadOnly = true, ScrollBars = wrap ? ScrollBars.Vertical : ScrollBars.Both,
+        WordWrap = wrap, Dock = DockStyle.Fill, Font = new Font("Consolas", 10),
+        BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle
+    };
 
     private static void AddLabeled(FlowLayoutPanel panel, string caption, Control control)
     {
@@ -208,11 +287,48 @@ internal sealed class MainForm : Form
         panel.Controls.Add(group);
     }
 
-    private void Log(string text)
+    private void Log(string text, bool telegram = false)
     {
         if (IsDisposed || Disposing) return;
-        if (InvokeRequired) { BeginInvoke(new Action(() => Log(text))); return; }
-        _log.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {text}\r\n");
+        if (InvokeRequired) { BeginInvoke(new Action(() => Log(text, telegram))); return; }
+
+        var now = DateTime.Now;
+        (telegram ? _telegrams : _results).AppendText($"[{now:HH:mm:ss.fff}] {text}\r\n");
+        if (_logWriteFailed) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
+            File.AppendAllText(_logPath, $"[{now:yyyy-MM-dd HH:mm:ss.fff zzz}] {text}{Environment.NewLine}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logWriteFailed = true;
+            _results.AppendText($"Salvataggio del log non riuscito: {ex.Message}\r\n");
+        }
+    }
+
+    private void OpenLog()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_logPath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log($"Impossibile aprire il log: {ex.Message}");
+        }
+    }
+
+    private void Login()
+    {
+        try
+        {
+            Send(SchneiderProtocol.Login(_password.Text));
+        }
+        catch (ArgumentException ex)
+        {
+            Log($"Login non inviato: {ex.Message}");
+        }
     }
 
     private async Task ScanAsync()
@@ -262,13 +378,15 @@ internal sealed class MainForm : Form
                 !string.Equals(chosen.Mac.Replace(":", ""), mac.Replace(":", "").Replace("-", ""), StringComparison.OrdinalIgnoreCase))
                 Log("ATTENZIONE: il MAC digitato è diverso da quello rilevato per il dispositivo selezionato.");
             await Task.Run(() => candidate.Connect(mac, 1, message => Log("BT: " + message)));
+            if (IsDisposed || Disposing) return;
             _client = candidate;
             candidate = null;
-            _disconnect.Enabled = _login.Enabled = _read.Enabled = _next.Enabled = _send.Enabled = true;
+            _disconnect.Enabled = _login.Enabled = _send.Enabled = true;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
-            Log("Socket RFCOMM aperto. Avvio ricezione. Ora premi Login 323.");
+            Log("Socket RFCOMM aperto.");
             _reading = new CancellationTokenSource();
             _ = ReceiveLoopAsync(_client, _reading.Token);
+            if (_autoLogin.Checked) Login();
         }
         catch (Exception ex)
         {
@@ -295,6 +413,7 @@ internal sealed class MainForm : Form
             while (!token.IsCancellationRequested)
             {
                 int count = await Task.Run(() => client.Receive(buffer));
+                if (token.IsCancellationRequested) break;
                 if (count == -1) continue;
                 if (count == 0) { Log("Il controller ha chiuso la connessione."); break; }
                 for (int i = 0; i < count; i++)
@@ -302,7 +421,7 @@ internal sealed class MainForm : Form
                     char c = (char)buffer[i];
                     pending.Append(c);
                     if (pending.Length == 12)
-                        expectedLength = SchneiderProtocol.DeviceReplyLength(pending.ToString());
+                        expectedLength = SchneiderProtocol.BinaryReplyLength(pending.ToString());
                     if (expectedLength > 0 && pending.Length < expectedLength) continue;
                     if (c == '*' || expectedLength > 0)
                     {
@@ -311,20 +430,15 @@ internal sealed class MainForm : Form
                         expectedLength = 0;
                         if (c != '*')
                         {
-                            Log("RX 201: terminatore mancante alla lunghezza dichiarata");
+                            Log("Ricezione: terminatore mancante alla lunghezza dichiarata");
                             continue;
                         }
-                        Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame));
-                        string deviceStatus = SchneiderProtocol.DeviceStatus(frame);
-                        if (deviceStatus.Length > 0) Log(deviceStatus);
-                        if (frame == "$0013230000*")
+                        Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame), telegram: true);
+                        Log(SchneiderProtocol.DescribeReply(frame));
+                        if (frame == "$0013230000*" && ReferenceEquals(_client, client))
                         {
-                            if (!IsDisposed) BeginInvoke(new Action(() =>
-                            {
-                                if (!ReferenceEquals(_client, client)) return;
-                                _lineCommands.Enabled = true;
-                                _status.Text = "Autenticazione 323: ACK ricevuto";
-                            }));
+                            _lineCommands.Enabled = _benchCommands.Enabled = true;
+                            _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
                     }
                     if (pending.Length > 8192) { Log("Buffer RX troppo lungo, azzerato"); pending.Clear(); }
@@ -339,33 +453,40 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void Send(string frame)
+    private bool Send(string frame)
     {
-        if (_client is null || !_client.Connected) { Log("Nessuna connessione aperta"); return; }
+        if (_client is null || !_client.Connected) { Log("Nessuna connessione aperta"); return false; }
         if (!frame.StartsWith('$') || !frame.EndsWith('*') || frame.Any(c => c > 127))
         {
-            Log("Telegramma non valido: richiesti ASCII e delimitatori $ ... *"); return;
+            Log("Telegramma non valido: richiesti ASCII e delimitatori $ ... *"); return false;
         }
         try
         {
             _client.SendAscii(frame);
-            Log("TX  " + (frame.StartsWith("$001323") ? "[LOGIN 323 — password oscurata]" : frame));
-            if (frame.StartsWith("$001323"))
+            bool isLogin = frame.StartsWith("$001323", StringComparison.Ordinal);
+            Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
+            if (isLogin)
             {
-                _lineCommands.Enabled = false;
+                _lineCommands.Enabled = _benchCommands.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
+                Log("Login 323 inviato.");
             }
         }
-        catch (Exception ex) { Log("ERRORE TX: " + ex.Message); }
+        catch (Exception ex)
+        {
+            Log("ERRORE TX: " + ex.Message);
+            return false;
+        }
+        return true;
     }
 
     private void Disconnect()
     {
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
-        _lineCommands.Enabled = false;
+        _lineCommands.Enabled = _benchCommands.Enabled = false;
         _connect.Enabled = true;
-        _disconnect.Enabled = _login.Enabled = _read.Enabled = _next.Enabled = _send.Enabled = false;
+        _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";
         Log("Socket chiuso.");
     }

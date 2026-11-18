@@ -18,9 +18,6 @@ internal static class SchneiderProtocol
         return $"$001{id:000}{payload.Length:000}{payload}00*";
     }
 
-    public static string LineACommand(int operation) =>
-        LineCommand(0, operation);
-
     public static string LineCommand(int line, int operation) =>
         Command(17, FormattableString.Invariant($"{line:00}00000{operation:000}"));
 
@@ -66,17 +63,46 @@ internal static class SchneiderProtocol
         return $"{address}: {assigned}{communication}.";
     }
 
-    public static int DeviceReplyLength(string header)
+    public static int BinaryReplyLength(string header)
     {
-        // Successful 201 replies carry binary device data, which may contain '*'.
-        if (header.Length != 12 || header[0] != '$' || !header.AsSpan(4, 5).SequenceEqual("20100"))
+        // These successful replies carry binary data, which may contain '*'.
+        if (header.Length != 12 || header[0] != '$' || !header.AsSpan(7, 2).SequenceEqual("00"))
             return 0;
+        string code = header.Substring(4, 3);
+        if (code is not ("201" or "208")) return 0;
 
         ReadOnlySpan<char> length = header.AsSpan(9, 3);
         if (length[0] is < '0' or > '9' || length[1] is < '0' or > '9' || length[2] is < '0' or > '9')
             return 0;
 
         return 12 + int.Parse(length, System.Globalization.CultureInfo.InvariantCulture) + 3;
+    }
+
+    public static string DescribeReply(string frame)
+    {
+        if (frame.Length < 12 || frame[0] != '$' || !frame.EndsWith("00*", StringComparison.Ordinal))
+            return "Risposta non riconosciuta.";
+
+        string command = frame.Substring(4, 3);
+        string status = frame.Substring(7, 2);
+        if (status != "00") return $"Comando {command} · esito {status}.";
+        if (frame.Length == 12) return $"Comando {command} · accettato dalla centralina.";
+        if (frame.Length < 15 ||
+            !int.TryParse(frame.AsSpan(9, 3), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out int dataLength) ||
+            dataLength != frame.Length - 15)
+            return $"Comando {command} · esito 00, formato dati non riconosciuto.";
+
+        if (command == "201" && dataLength == 115) return DeviceStatus(frame);
+        if (command == "208" && dataLength == 77)
+        {
+            string name = frame.Substring(52, 21).TrimEnd(' ', '\0');
+            string serial = frame.Substring(21, 9).TrimEnd(' ', '\0');
+            string mac = string.Join(":", frame.Skip(73).Take(6).Select(value => ((int)value).ToString("X2")));
+            int revision = frame[83] | (frame[84] << 8);
+            return $"Centralina {FormatReplyForLog(name)} · seriale {FormatReplyForLog(serial)} · MAC {mac} · revisione {revision}.";
+        }
+        return $"Comando {command} · esito 00, {dataLength} byte di dati.";
     }
 
     public static string FormatReplyForLog(string frame) =>
