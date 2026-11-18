@@ -14,6 +14,10 @@ internal sealed class MainForm : Form
     private readonly Button _login = new() { Text = "Login 323", AutoSize = true, Enabled = false };
     private readonly Button _read = new() { Text = "Lettura 007", AutoSize = true, Enabled = false };
     private readonly Button _next = new() { Text = "Leggi 134", AutoSize = true, Enabled = false };
+    private readonly FlowLayoutPanel _lineCommands = new()
+    {
+        AutoSize = true, WrapContents = true, Dock = DockStyle.Fill, Enabled = false
+    };
     private readonly Button _send = new() { Text = "Invia TX", AutoSize = true, Enabled = false };
     private readonly TextBox _command = new() { Width = 530, Text = "$00113400000*" };
     private readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
@@ -21,7 +25,6 @@ internal sealed class MainForm : Form
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
-    private bool _authenticated;
 
     public MainForm()
     {
@@ -42,6 +45,12 @@ internal sealed class MainForm : Form
         AddLabeled(auth, "Password app (8 caratteri)", _password);
         auth.Controls.AddRange([_connect, _disconnect, _login]);
         header.Controls.Add(auth);
+
+        _lineCommands.Controls.Add(new Label { Text = "Tutta la linea A", AutoSize = true, Margin = new Padding(5, 8, 8, 0) });
+        AddLineCommand("Accendi al massimo", 5);
+        AddLineCommand("Spegni", 0);
+        AddLineCommand("Identifica", 240);
+        header.Controls.Add(_lineCommands);
 
         var commands = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill };
         commands.Controls.AddRange([_read, _next]);
@@ -73,6 +82,13 @@ internal sealed class MainForm : Form
         FormClosing += (_, _) => Disconnect();
         Log("Pronto. Avvia 'Cerca NCU', seleziona il controller e connettiti. In alternativa inserisci il MAC Bluetooth manualmente.");
         Log("La password Schneider viene inviata con comando 323 DOPO la connessione Bluetooth; non e' il PIN di Windows.");
+    }
+
+    private void AddLineCommand(string label, int operation)
+    {
+        var button = new Button { Text = label, AutoSize = true };
+        button.Click += (_, _) => Send(SchneiderProtocol.LineACommand(operation));
+        _lineCommands.Controls.Add(button);
     }
 
     private static void AddLabeled(FlowLayoutPanel panel, string caption, Control control)
@@ -139,7 +155,6 @@ internal sealed class MainForm : Form
             await Task.Run(() => candidate.Connect(mac, 1, message => Log("BT: " + message)));
             _client = candidate;
             candidate = null;
-            _authenticated = false;
             _disconnect.Enabled = _login.Enabled = _read.Enabled = _next.Enabled = _send.Enabled = true;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
             Log("Socket RFCOMM aperto. Avvio ricezione. Ora premi Login 323.");
@@ -193,8 +208,12 @@ internal sealed class MainForm : Form
                         Log("RX  " + SchneiderProtocol.FormatReplyForLog(frame));
                         if (frame == "$0013230000*")
                         {
-                            _authenticated = true;
-                            if (!IsDisposed) BeginInvoke(new Action(() => _status.Text = "Autenticazione 323: ACK ricevuto"));
+                            if (!IsDisposed) BeginInvoke(new Action(() =>
+                            {
+                                if (!ReferenceEquals(_client, client)) return;
+                                _lineCommands.Enabled = true;
+                                _status.Text = "Autenticazione 323: ACK ricevuto";
+                            }));
                         }
                     }
                     if (pending.Length > 8192) { Log("Buffer RX troppo lungo, azzerato"); pending.Clear(); }
@@ -220,7 +239,11 @@ internal sealed class MainForm : Form
         {
             _client.SendAscii(frame);
             Log("TX  " + (frame.StartsWith("$001323") ? "[LOGIN 323 — password oscurata]" : frame));
-            if (frame.StartsWith("$001323")) _status.Text = "Login inviato — attesa ACK";
+            if (frame.StartsWith("$001323"))
+            {
+                _lineCommands.Enabled = false;
+                _status.Text = "Login inviato — attesa ACK";
+            }
         }
         catch (Exception ex) { Log("ERRORE TX: " + ex.Message); }
     }
@@ -229,7 +252,7 @@ internal sealed class MainForm : Form
     {
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
-        _authenticated = false;
+        _lineCommands.Enabled = false;
         _connect.Enabled = true;
         _disconnect.Enabled = _login.Enabled = _read.Enabled = _next.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";

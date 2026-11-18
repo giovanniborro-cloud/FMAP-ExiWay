@@ -18,6 +18,9 @@ internal static class SchneiderProtocol
         return $"$001{id:000}{payload.Length:000}{payload}00*";
     }
 
+    public static string LineACommand(int operation) =>
+        Command(17, FormattableString.Invariant($"0000000{operation:000}"));
+
     public static int DeviceReplyLength(string header)
     {
         // Successful 201 replies carry binary device data, which may contain '*'.
