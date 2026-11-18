@@ -103,7 +103,7 @@ internal sealed class BluetoothRfcommClient : IDisposable
         if (localRadio is ulong localAddress)
         {
             byte[] local = CreateSocketAddress(localAddress, 0, Guid.Empty);
-            diagnostic?.Invoke($"{description}: bind con radio locale {FormatAddress(localAddress)}, porta=0");
+            diagnostic?.Invoke($"{description}: bind con radio locale {FormatAddress(localAddress)}, porta=0, SOCKADDR_BTH={local.Length} byte");
             if (bind(_socket, local, local.Length) != 0)
             {
                 int bindError = WSAGetLastError();
@@ -116,7 +116,7 @@ internal sealed class BluetoothRfcommClient : IDisposable
         else diagnostic?.Invoke($"{description}: nessun bind esplicito, endpoint gestito da Windows");
 
         byte[] sockaddr = CreateSocketAddress(address, port, serviceGuid);
-        diagnostic?.Invoke($"Tentativo {description}: MAC={FormatAddress(address)}, porta={port}, UUID={serviceGuid}");
+        diagnostic?.Invoke($"Tentativo {description}: MAC={FormatAddress(address)}, porta={port}, UUID={serviceGuid}, SOCKADDR_BTH={sockaddr.Length} byte");
         if (connect(_socket, sockaddr, sockaddr.Length) != 0)
         {
             int error = WSAGetLastError();
