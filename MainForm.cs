@@ -34,16 +34,16 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = "OVA-GEN3 · Banco prova Exiway";
-        StartPosition = FormStartPosition.CenterScreen;
+        StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.Font;
         Font = new Font("Segoe UI", 10);
         BackColor = Color.FromArgb(245, 247, 250);
         ForeColor = Color.FromArgb(27, 43, 59);
-        Size = new Size(1180, 800);
-        MinimumSize = new Size(860, 680);
 
         var header = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(12, 8, 12, 4)
+            Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1, Padding = new Padding(12, 8, 12, 4)
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
@@ -80,15 +80,17 @@ internal sealed class MainForm : Form
         manual.Controls.Add(_send, 1, 0);
         header.Controls.Add(CreateSection("Telegramma manuale", manual));
 
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterWidth = 7,
-            Margin = new Padding(0), BackColor = BackColor
-        };
-        split.Size = new Size(800, 300);
-        split.SplitterDistance = 130;
-        split.Panel1.Controls.Add(CreateLogSection("Risultati e operazioni", _results));
-        split.Panel2.Controls.Add(CreateLogSection("Telegrammi TX / RX", _telegrams));
+        var commandScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        commandScroll.Controls.Add(header);
+
+        var logs = CreateSplitter(topMinimum: 56, bottomMinimum: 56);
+        logs.Panel1.Controls.Add(CreateLogSection("Risultati e operazioni", _results));
+        logs.Panel2.Controls.Add(CreateLogSection("Telegrammi TX / RX", _telegrams));
+
+        var workspace = CreateSplitter(topMinimum: 72, bottomMinimum: 128);
+        workspace.FixedPanel = FixedPanel.Panel1;
+        workspace.Panel1.Controls.Add(commandScroll);
+        workspace.Panel2.Controls.Add(logs);
 
         var footer = CreateRow();
         footer.Dock = DockStyle.Bottom;
@@ -96,9 +98,21 @@ internal sealed class MainForm : Form
         var logFile = new LinkLabel { Text = "Apri log sessione", AutoSize = true, Margin = new Padding(18, 3, 3, 3) };
         logFile.LinkClicked += (_, _) => OpenLog();
         footer.Controls.AddRange([_status, logFile]);
-        Controls.Add(split);
-        Controls.Add(header);
+        Controls.Add(workspace);
         Controls.Add(footer);
+
+        Load += (_, _) =>
+        {
+            Rectangle screen = Screen.FromPoint(Cursor.Position).WorkingArea;
+            MinimumSize = new Size(Math.Min(620, screen.Width), Math.Min(450, screen.Height));
+            int width = Math.Min(1180, screen.Width);
+            int height = Math.Min(800, screen.Height);
+            Bounds = new Rectangle(screen.Left + (screen.Width - width) / 2,
+                screen.Top + (screen.Height - height) / 2, width, height);
+            PerformLayout();
+            SetInitialSplit(workspace, Math.Min(header.Height + 4, workspace.ClientSize.Height * 3 / 5));
+            SetInitialSplit(logs, logs.ClientSize.Height / 2);
+        };
 
         _scan.Click += async (_, _) => await ScanAsync();
         _devices.SelectedIndexChanged += (_, _) => SelectDevice();
@@ -263,6 +277,21 @@ internal sealed class MainForm : Form
         foreach (var row in rows) stack.Controls.Add(row);
         group.Controls.Add(stack);
         return group;
+    }
+
+    private static SplitContainer CreateSplitter(int topMinimum, int bottomMinimum) => new()
+    {
+        Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
+        Size = new Size(800, 360), SplitterWidth = 8,
+        Panel1MinSize = topMinimum, Panel2MinSize = bottomMinimum,
+        IsSplitterFixed = false, BackColor = Color.FromArgb(211, 220, 229)
+    };
+
+    private static void SetInitialSplit(SplitContainer split, int preferred)
+    {
+        int max = split.ClientSize.Height - split.SplitterWidth - split.Panel2MinSize;
+        if (max >= split.Panel1MinSize)
+            split.SplitterDistance = Math.Clamp(preferred, split.Panel1MinSize, max);
     }
 
     private static GroupBox CreateLogSection(string title, TextBox view)
