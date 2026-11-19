@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 
 namespace SchneiderLoader;
@@ -6,10 +7,19 @@ internal static class BluetoothDiscovery
 {
     internal sealed record Device(string Name, string Mac, bool Paired, bool Connected)
     {
-        public override string ToString() => $"{Name}  [{Mac}]" + (Paired ? "  associato" : "");
+        public bool IsNcu => Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase);
+
+        public override string ToString()
+        {
+            string displayName = Name.Length == 0 ? "Dispositivo senza nome" : Name;
+            return $"{displayName} [{Mac}] · {(Paired ? "associato" : "non associato")}";
+        }
     }
 
-    // Windows Bluetooth Classic discovery using bthprops.cpl. Includes known and newly discovered devices.
+    private const int NoMoreItems = 259;
+    private const byte InquiryTimeoutUnits = 8; // Windows uses 1.28-second units.
+
+    // Run an active Bluetooth Classic inquiry as well as including cached devices.
     public static List<Device> Scan()
     {
         var devices = new List<Device>();
@@ -18,25 +28,39 @@ internal static class BluetoothDiscovery
             dwSize = Marshal.SizeOf<BluetoothDeviceSearchParams>(),
             fReturnAuthenticated = true, fReturnRemembered = true,
             fReturnUnknown = true, fReturnConnected = true,
-            fIssueInquiry = true, cTimeoutMultiplier = 4,
+            fIssueInquiry = true, cTimeoutMultiplier = InquiryTimeoutUnits,
             hRadio = IntPtr.Zero
         };
         var info = new BluetoothDeviceInfo { dwSize = Marshal.SizeOf<BluetoothDeviceInfo>() };
         IntPtr handle = BluetoothFindFirstDevice(ref search, ref info);
-        if (handle == IntPtr.Zero) return devices;
+        if (handle == IntPtr.Zero)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error == NoMoreItems) return devices;
+            throw new Win32Exception(error);
+        }
         try
         {
             do
             {
-                string mac = string.Join(":", Enumerable.Range(0, 6)
-                    .Select(i => ((info.Address >> (8 * (5 - i))) & 0xFF).ToString("X2")));
-                if (!string.IsNullOrWhiteSpace(info.szName))
-                    devices.Add(new Device(info.szName, mac, info.fAuthenticated, info.fConnected));
+                if ((info.Address & 0x0000FFFFFFFFFFFFUL) != 0)
+                {
+                    string mac = BluetoothRfcommClient.FormatAddress(info.Address);
+                    devices.Add(new Device(info.szName?.Trim() ?? "", mac, info.fAuthenticated, info.fConnected));
+                }
                 info.dwSize = Marshal.SizeOf<BluetoothDeviceInfo>();
             } while (BluetoothFindNextDevice(handle, ref info));
+
+            int error = Marshal.GetLastWin32Error();
+            if (error != NoMoreItems) throw new Win32Exception(error);
         }
         finally { BluetoothFindDeviceClose(handle); }
-        return devices.OrderByDescending(d => d.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase)).ThenBy(d => d.Name).ToList();
+        return devices.OrderByDescending(d => d.IsNcu)
+            .ThenBy(d => d.Paired)
+            .ThenBy(d => d.Name.Length == 0)
+            .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(d => d.Mac, StringComparer.Ordinal)
+            .ToList();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -69,9 +93,9 @@ internal static class BluetoothDiscovery
         public SystemTime stLastUsed;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)] public string szName;
     }
-    [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+    [DllImport("bthprops.cpl", ExactSpelling = true, SetLastError = true)]
     private static extern IntPtr BluetoothFindFirstDevice(ref BluetoothDeviceSearchParams search, ref BluetoothDeviceInfo info);
-    [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+    [DllImport("bthprops.cpl", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool BluetoothFindNextDevice(IntPtr find, ref BluetoothDeviceInfo info);
     [DllImport("bthprops.cpl")]

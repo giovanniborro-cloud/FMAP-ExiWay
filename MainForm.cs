@@ -375,6 +375,12 @@ internal sealed class MainForm : Form
 
     private void Login()
     {
+        if (string.IsNullOrWhiteSpace(_password.Text))
+        {
+            Log("Inserisci la password della centralina per il login 323.");
+            return;
+        }
+
         try
         {
             Send(SchneiderProtocol.Login(_password.Text));
@@ -388,20 +394,19 @@ internal sealed class MainForm : Form
     private async Task ScanAsync()
     {
         _scan.Enabled = false;
-        _status.Text = "Ricerca Bluetooth Classic...";
+        _status.Text = "Ricerca Bluetooth Classic, anche non associati…";
         try
         {
             var list = await Task.Run(BluetoothDiscovery.Scan);
+            if (IsDisposed || Disposing) return;
             _devices.Items.Clear();
-            foreach (var item in list) _devices.Items.Add(item);
-            if (_devices.Items.Count > 0)
-            {
-                int firstNcu = list.FindIndex(d => d.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase));
-                _devices.SelectedIndex = firstNcu >= 0 ? firstNcu : 0;
-            }
-            foreach (var device in list.Where(d => d.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase)))
-                Log($"NCU rilevato: {device.Name} / MAC {device.Mac} / paired={device.Paired} / connected={device.Connected}");
-            Log($"Trovati {list.Count} dispositivi Bluetooth Classic, {list.Count(x => x.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase))} NCU.");
+            _devices.Items.AddRange(list.ToArray());
+            _devices.SelectedIndex = list.FindIndex(device => device.IsNcu);
+            foreach (var device in list)
+                Log($"Bluetooth rilevato: {device} / connesso={device.Connected}");
+            Log($"Trovati {list.Count} dispositivi Bluetooth Classic, di cui {list.Count(device => !device.Paired)} non associati.");
+            if (_devices.SelectedIndex < 0 && list.Count > 0)
+                Log("Nessun nome NCU riconosciuto. Seleziona il dispositivo corrispondente al MAC della centralina.");
             _status.Text = "Ricerca completata";
         }
         catch (Exception ex) { Log("Ricerca fallita: " + ex.Message); _status.Text = "Errore ricerca"; }
@@ -411,9 +416,10 @@ internal sealed class MainForm : Form
     private void SelectDevice()
     {
         if (_devices.SelectedItem is not BluetoothDiscovery.Device item) return;
+        if (!item.IsNcu) _password.Clear();
         _name.Text = item.Name;
         _mac.Text = item.Mac;
-        Log($"Selezionato {item.Name} / {item.Mac} / paired={item.Paired}");
+        Log($"Selezionato {item}");
     }
 
     private async Task ConnectAsync()
