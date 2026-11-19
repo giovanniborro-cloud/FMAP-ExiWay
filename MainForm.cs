@@ -15,6 +15,8 @@ internal sealed class MainForm : Form
     private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
+    private readonly NumericUpDown _exportControllerAddress = new() { Minimum = 1, Maximum = 50, Value = 1, Width = 54 };
+    private readonly ComboBox _exportLines = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 87 };
     private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
     private readonly Button _lampStatuses = new() { Text = "Stato lampade → Excel", AutoSize = true, Enabled = false };
     private CancellationTokenSource? _addressScan;
@@ -82,6 +84,10 @@ internal sealed class MainForm : Form
         header.Controls.Add(_benchCommands);
 
         var inventory = CreateCompactRow();
+        _exportLines.Items.AddRange(["A + B", "Solo A", "Solo B"]);
+        _exportLines.SelectedIndex = 0;
+        AddCompactField(inventory, "Indirizzo centralina per Excel", _exportControllerAddress);
+        AddCompactField(inventory, "Linee da leggere", _exportLines);
         inventory.Controls.AddRange([_findAddresses, _lampStatuses]);
         header.Controls.Add(inventory);
 
@@ -474,23 +480,37 @@ internal sealed class MainForm : Form
         var client = _client;
         if (client is null || !client.Connected) return;
 
+        int controllerAddress = (int)_exportControllerAddress.Value;
+        int firstLine = _exportLines.SelectedIndex == 2 ? 1 : 0;
+        int lastLine = _exportLines.SelectedIndex == 1 ? 0 : 1;
+        if (AddressWorkbook.BusNumber(controllerAddress, lastLine) > 99)
+        {
+            Log("L'indirizzo 50 consente solo la linea A (BUS L99). La linea B produrrebbe BUS 100.");
+            return;
+        }
+        string lines = _exportLines.Text;
+        int firstIndex = firstLine * 64;
+        int endIndex = (lastLine + 1) * 64;
+        int count = endIndex - firstIndex;
+
         using var scan = new CancellationTokenSource();
         _addressScan = scan;
         var activeButton = includeLampStatus ? _lampStatuses : _findAddresses;
         string originalLabel = activeButton.Text;
         activeButton.Text = "Annulla ricerca";
         (includeLampStatus ? _findAddresses : _lampStatuses).Enabled = false;
+        _exportControllerAddress.Enabled = _exportLines.Enabled = false;
         string reportTitle = includeLampStatus ? "Stato lampade" : "Indirizzi";
         _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
         var addresses = new List<LampAddressStatus>();
-        Log($"{reportTitle}: lettura avviata sulle linee A e B.");
+        Log($"{reportTitle}: {lines} sulla connessione attiva · indirizzo centralina per Excel {controllerAddress:00}.");
         try
         {
-            for (int index = 0; index < 128; index++)
+            for (int index = firstIndex; index < endIndex; index++)
             {
                 scan.Token.ThrowIfCancellationRequested();
                 var target = new LampAddressStatus(index, false, false);
-                _status.Text = $"Ricerca {target.Address} ({index + 1}/128)";
+                _status.Text = $"Ricerca {target.Address} ({index - firstIndex + 1}/{count})";
                 _requestedAddress = index;
                 var reply = new TaskCompletionSource<LampAddressStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _addressReply = reply;
@@ -510,16 +530,16 @@ internal sealed class MainForm : Form
             }
 
             scan.Token.ThrowIfCancellationRequested();
-            Log($"Ricerca completata: {addresses.Count} indirizzi registrati su 128 verificati.");
+            Log($"Ricerca completata: {addresses.Count} indirizzi registrati su {count} verificati.");
             using var save = new SaveFileDialog
             {
                 Title = $"Esporta in Excel · {reportTitle}", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
                 DefaultExt = "xlsx", AddExtension = true, InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                FileName = $"{reportTitle.Replace(' ', '-')}-Exiway-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
+                FileName = $"{reportTitle.Replace(' ', '-')}-Exiway-C{controllerAddress:00}-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
             };
             if (save.ShowDialog(this) == DialogResult.OK)
             {
-                AddressWorkbook.Save(save.FileName, addresses, includeLampStatus);
+                AddressWorkbook.Save(save.FileName, addresses, controllerAddress, includeLampStatus);
                 Log($"Excel salvato: {save.FileName}");
             }
             else Log("Salvataggio Excel annullato.");
@@ -539,6 +559,7 @@ internal sealed class MainForm : Form
             if (!IsDisposed && !Disposing)
             {
                 activeButton.Text = originalLabel;
+                _exportControllerAddress.Enabled = _exportLines.Enabled = true;
                 _scan.Enabled = true;
                 if (ReferenceEquals(_client, client) && client.Connected)
                 {

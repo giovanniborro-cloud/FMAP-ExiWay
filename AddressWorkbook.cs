@@ -6,7 +6,12 @@ namespace SchneiderLoader;
 
 internal static class AddressWorkbook
 {
-    public static void Save(string path, IReadOnlyList<LampAddressStatus> addresses, bool includeLampStatus)
+    public static int BusNumber(int controllerAddress, int line) => (controllerAddress - 1) * 2 + line + 1;
+
+    private static string LampCode(int bus, int number) =>
+        FormattableString.Invariant($"CA-L{bus:00}-N{number:00}");
+
+    public static void Save(string path, IReadOnlyList<LampAddressStatus> addresses, int controllerAddress, bool includeLampStatus)
     {
         XNamespace sheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
         XNamespace links = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -15,16 +20,25 @@ internal static class AddressWorkbook
 
         XElement Text(string value) => new(sheet + "c", new XAttribute("t", "inlineStr"),
             new XElement(sheet + "is", new XElement(sheet + "t", value)));
-        var headers = new XElement(sheet + "row", Text("Linea"), Text("Numero"), Text("Indirizzo"), Text("Stato comunicazione"));
+        XElement Number(int value) => new(sheet + "c",
+            new XElement(sheet + "v", value.ToString(CultureInfo.InvariantCulture)));
+        var headers = new XElement(sheet + "row", Text("Codice lampada"), Text("Indirizzo centralina"), Text("BUS"),
+            Text("Linea"), Text("Numero"), Text("Indirizzo"), Text("Stato comunicazione"));
         if (includeLampStatus)
             headers.Add(Text("Guasti registrati"), Text("Modalità emergenza (codice)"), Text("Stato emergenza (codice)"));
 
         var data = new XElement(sheet + "sheetData", headers);
         foreach (var address in addresses)
         {
+            int bus = BusNumber(controllerAddress, address.Index / 64);
+            if (bus is < 1 or > 99)
+                throw new ArgumentOutOfRangeException(nameof(controllerAddress), "Il numero di BUS deve essere da 1 a 99.");
             var row = new XElement(sheet + "row",
+                Text(LampCode(bus, address.Number)),
+                Number(controllerAddress),
+                Text(FormattableString.Invariant($"L{bus:00}")),
                 Text(address.Line.ToString()),
-                new XElement(sheet + "c", new XElement(sheet + "v", address.Number.ToString(CultureInfo.InvariantCulture))),
+                Number(address.Number),
                 Text(address.Address),
                 Text(address.CommunicationError ? "Errore segnalato" : "Nessun errore segnalato"));
             if (includeLampStatus)
@@ -65,8 +79,8 @@ internal static class AddressWorkbook
                 XElement Column(int first, int last, int width) => new(sheet + "col",
                     new XAttribute("min", first), new XAttribute("max", last),
                     new XAttribute("width", width), new XAttribute("customWidth", 1));
-                var columns = new XElement(sheet + "cols", Column(1, 3, 13), Column(4, 4, 28));
-                if (includeLampStatus) columns.Add(Column(5, 5, 65), Column(6, 7, 32));
+                var columns = new XElement(sheet + "cols", Column(1, 2, 20), Column(3, 6, 13), Column(7, 7, 28));
+                if (includeLampStatus) columns.Add(Column(8, 8, 65), Column(9, 10, 32));
                 Add("xl/worksheets/sheet1.xml", new XElement(sheet + "worksheet", columns, data));
             }
             File.Move(temporary, path, overwrite: true);
