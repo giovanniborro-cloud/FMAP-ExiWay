@@ -6,6 +6,8 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        using var role = new OperatorRoleDialog();
+        if (role.ShowDialog() == DialogResult.OK)
+            Application.Run(new MainForm(role.Installer));
     }
 }

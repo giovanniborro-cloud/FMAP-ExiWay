@@ -128,6 +128,15 @@ internal static class SchneiderProtocol
         return true;
     }
 
+    public static bool TryReadNextAddress(string frame, out int number)
+    {
+        number = -1;
+        return frame.Length == 17 && frame.AsSpan(7, 5).SequenceEqual("00002") &&
+            TryReadReplyStatus(frame, "134", out _) &&
+            int.TryParse(frame.AsSpan(12, 2), System.Globalization.NumberStyles.AllowHexSpecifier,
+                System.Globalization.CultureInfo.InvariantCulture, out number) && number < 64;
+    }
+
     public static string DescribeReply(string frame)
     {
         if (frame.Length < 12 || frame[0] != '$' || !frame.EndsWith("00*", StringComparison.Ordinal))

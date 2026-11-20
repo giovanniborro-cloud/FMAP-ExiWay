@@ -2,7 +2,7 @@ using System.Text;
 
 namespace SchneiderLoader;
 
-internal sealed class MainForm : Form
+internal sealed partial class MainForm : Form
 {
     private readonly ComboBox _devices = new() { Width = 285, DropDownWidth = 440, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _mac = new() { Width = 160, PlaceholderText = "AA:BB:CC:DD:EE:FF" };
@@ -29,8 +29,8 @@ internal sealed class MainForm : Form
     private readonly Button _showLampMap = new() { Text = "Mappa indirizzi", AutoSize = true, Enabled = false };
     private LampAddressMap? _lampMap;
     private CancellationTokenSource? _clearLine;
-    private TaskCompletionSource<string>? _clearReply;
-    private string? _expectedClearCommand;
+    private TaskCompletionSource<string>? _commandReply;
+    private string? _expectedCommand;
     private CancellationTokenSource? _addressScan;
     private TaskCompletionSource<LampAddressStatus>? _addressReply;
     private int _requestedAddress;
@@ -41,15 +41,16 @@ internal sealed class MainForm : Form
     private readonly string _logPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "OVA-GEN3", "Logs", $"sessione-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Environment.ProcessId}.log");
-    private Control _benchCommands = null!;
+    private Control _benchCommands = new Panel();
     private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
 
-    public MainForm()
+    public MainForm(bool installer)
     {
-        Text = "OVA-GEN3 · Linee Exiway";
+        _installer = installer;
+        Text = installer ? "OVA-GEN3 · Tecnico Installatore" : "OVA-GEN3 · Operatore Esperto";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Font;
         Font = new Font("Segoe UI", 10);
@@ -63,62 +64,68 @@ internal sealed class MainForm : Form
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        var devices = CreateCompactRow();
-        devices.Margin = Padding.Empty;
-
         using var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("OvaGen3.ico")!;
         using var embeddedIcon = new Icon(iconStream, 32, 32);
         var windowIcon = (Icon)embeddedIcon.Clone();
         Icon = windowIcon;
-        var logoImage = embeddedIcon.ToBitmap();
-        var logo = new PictureBox
+        Disposed += (_, _) => windowIcon.Dispose();
+
+        if (installer)
         {
-            Image = logoImage, Size = new Size(27, 27), SizeMode = PictureBoxSizeMode.Zoom,
-            Margin = new Padding(2, 2, 5, 2), AccessibleName = "Logo OVA-GEN3"
-        };
-        devices.Controls.Add(logo);
-        Disposed += (_, _) =>
+            header.Controls.Add(CreateInstallerControls());
+        }
+        else
         {
-            logoImage.Dispose();
-            windowIcon.Dispose();
-        };
-        AddCompactField(devices, "Connessione Bluetooth", _devices);
-        var discovery = new FlowLayoutPanel
-        {
-            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty
-        };
-        discovery.Controls.AddRange([_scan, _autoLogin]);
-        devices.Controls.Add(discovery);
-        AddCompactField(devices, "MAC", _mac);
-        header.Controls.Add(devices);
+            var devices = CreateCompactRow();
+            devices.Margin = Padding.Empty;
 
-        var auth = CreateCompactRow();
-        AddCompactField(auth, "Nome NCU", _name);
-        AddCompactField(auth, "Password app", _password);
-        auth.Controls.AddRange([_connect, _disconnect, _login]);
-        header.Controls.Add(auth);
+            var logoImage = embeddedIcon.ToBitmap();
+            var logo = new PictureBox
+            {
+                Image = logoImage, Size = new Size(27, 27), SizeMode = PictureBoxSizeMode.Zoom,
+                Margin = new Padding(2, 2, 5, 2), AccessibleName = "Logo OVA-GEN3"
+            };
+            devices.Controls.Add(logo);
+            Disposed += (_, _) => logoImage.Dispose();
+            AddCompactField(devices, "Connessione Bluetooth", _devices);
+            var discovery = new FlowLayoutPanel
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+                Margin = Padding.Empty
+            };
+            discovery.Controls.AddRange([_scan, _autoLogin]);
+            devices.Controls.Add(discovery);
+            AddCompactField(devices, "MAC", _mac);
+            header.Controls.Add(devices);
 
-        _lineTarget.Items.AddRange(["A", "B", "A + B"]);
-        _lineTarget.SelectedIndex = 0;
-        _benchCommands = CreateBenchCommands();
-        _benchCommands.Enabled = false;
-        header.Controls.Add(_benchCommands);
+            var auth = CreateCompactRow();
+            AddCompactField(auth, "Nome NCU", _name);
+            AddCompactField(auth, "Password app", _password);
+            auth.Controls.AddRange([_connect, _disconnect, _login]);
+            header.Controls.Add(auth);
 
-        header.Controls.Add(CreateNcuProfilesRow());
+            _lineTarget.Items.AddRange(["A", "B", "A + B"]);
+            _lineTarget.SelectedIndex = 0;
+            _benchCommands = CreateBenchCommands();
+            _benchCommands.Enabled = false;
+            header.Controls.Add(_benchCommands);
 
-        var inventory = CreateCompactRow();
-        _exportLines.Items.AddRange(["A + B", "Solo A", "Solo B"]);
-        _exportLines.SelectedIndex = 0;
-        inventory.Controls.AddRange([_findAddresses, _lampStatuses, _showLampMap]);
-        header.Controls.Add(inventory);
+            header.Controls.Add(CreateNcuProfilesRow());
 
-        var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
-        manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        manual.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        manual.Controls.Add(_command, 0, 0);
-        manual.Controls.Add(_send, 1, 0);
-        header.Controls.Add(CreateSection("Telegramma manuale", manual));
+            var inventory = CreateCompactRow();
+            _exportLines.Items.AddRange(["A + B", "Solo A", "Solo B"]);
+            _exportLines.SelectedIndex = 0;
+            inventory.Controls.AddRange([_findAddresses, _lampStatuses, _showLampMap]);
+            header.Controls.Add(inventory);
+
+            var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
+            manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            manual.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            manual.Controls.Add(_command, 0, 0);
+            manual.Controls.Add(_send, 1, 0);
+            header.Controls.Add(CreateSection("Telegramma manuale", manual));
+
+        }
 
         var commandScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         commandScroll.Controls.Add(header);
@@ -169,8 +176,16 @@ internal sealed class MainForm : Form
             if (_name.Text.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && _name.Text.Length == 11)
                 _password.Text = _name.Text[3..];
         };
-        _connect.Click += async (_, _) => await ConnectAsync();
-        _disconnect.Click += (_, _) => Disconnect();
+        _connect.Click += async (_, _) =>
+        {
+            if (_installer) await ConnectInstallerAsync();
+            else await ConnectAsync();
+        };
+        _disconnect.Click += async (_, _) =>
+        {
+            if (_installer) await DisconnectInstallerAsync();
+            else Disconnect();
+        };
         _login.Click += (_, _) => Login();
         _autoLogin.CheckedChanged += (_, _) => Log(_autoLogin.Checked ? "Login automatico attivo." : "Login manuale attivo.");
         _send.Click += (_, _) => Send(_command.Text);
@@ -179,7 +194,8 @@ internal sealed class MainForm : Form
         _showLampMap.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false, showMap: true);
         FormClosing += (_, _) => Disconnect();
         Disposed += (_, _) => _lightTips.Dispose();
-        Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
+        Log(installer ? "Tecnico Installatore · è disponibile solo la NCU salvata come Test."
+            : "Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
         try
         {
@@ -293,7 +309,7 @@ internal sealed class MainForm : Form
         try
         {
             var profile = NcuProfiles.Validate(new NcuProfile(_name.Text, _connectedMac, _building.Text,
-                (int)_exportControllerAddress.Value, SelectedReportLines));
+                (int)_exportControllerAddress.Value, SelectedReportLines, _connectedBluetoothName));
             var updated = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
             NcuProfiles.Upsert(updated, profile);
             NcuProfiles.Save(NcuProfiles.LocalPath, updated);
@@ -687,6 +703,10 @@ internal sealed class MainForm : Form
             _client = candidate;
             candidate = null;
             _connectedMac = BluetoothRfcommClient.FormatAddress(address);
+            _connectedBluetoothName = _devices.SelectedItem is BluetoothDiscovery.Device device &&
+                device.Mac == _connectedMac && device.Name.Length > 0 ? device.Name
+                : _profiles.FirstOrDefault(profile => profile.Mac == _connectedMac &&
+                    !string.IsNullOrWhiteSpace(profile.BluetoothName))?.BluetoothName ?? _name.Text;
             _locationMac = _connectedMac;
             _saveNcu.Enabled = true;
             var saved = _profiles.Where(profile => profile.Mac == _connectedMac).Take(2).ToList();
@@ -695,12 +715,12 @@ internal sealed class MainForm : Form
                 _savedNcus.SelectedItem = saved[0];
                 ApplyProfileLocation(saved[0]);
             }
-            _disconnect.Enabled = _login.Enabled = _send.Enabled = true;
+            _disconnect.Enabled = _login.Enabled = _send.Enabled = !_installer;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
             Log("Socket RFCOMM aperto.");
             _reading = new CancellationTokenSource();
             _ = ReceiveLoopAsync(_client, _reading.Token);
-            if (_autoLogin.Checked) Login();
+            if (!_installer && _autoLogin.Checked) Login();
         }
         catch (Exception ex)
         {
@@ -718,16 +738,18 @@ internal sealed class MainForm : Form
         finally { candidate?.Dispose(); }
     }
 
-    private async Task ClearAddressesAsync(int line, int? address)
+    private async Task ClearAddressesAsync(int line, int? address, bool bothLines = false)
     {
         var client = _client;
-        if (client?.Connected != true || _clearLine is not null || _addressScan is not null) return;
+        if (client?.Connected != true || _clearLine is not null || _addressScan is not null ||
+            (_installer && !_installerAuthenticated))
+            return;
 
         char lineName = (char)('A' + line);
-        string target = address.HasValue ? $"indirizzo {lineName}{address.Value:00}" : $"linea {lineName}";
-        string question = address.HasValue
-            ? $"Cancellare l'{target}?"
-            : $"Cancellare tutti gli indirizzi della {target}?";
+        string target = bothLines ? "linee A e B"
+            : address.HasValue ? $"indirizzo {lineName}{address.Value:00}" : $"linea {lineName}";
+        string question = bothLines ? "Cancellare tutti gli indirizzi di Test, linee A e B?"
+            : address.HasValue ? $"Cancellare l'{target}?" : $"Cancellare tutti gli indirizzi della {target}?";
         if (MessageBox.Show(this, question,
             "Cancellazione indirizzi", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2) != DialogResult.Yes)
@@ -741,31 +763,19 @@ internal sealed class MainForm : Form
         try
         {
             int stepCount = address.HasValue ? 4 : 3;
-            for (int step = 1; step <= stepCount; step++)
+            int lastLine = bothLines ? 1 : line;
+            for (int currentLine = line; currentLine <= lastLine; currentLine++)
             {
-                clear.Token.ThrowIfCancellationRequested();
-                string frame = address is int number
-                    ? SchneiderProtocol.ClearLampStep(line, number, step)
-                    : SchneiderProtocol.ClearLineStep(line, step);
-                string command = frame.Substring(4, 3);
-                var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-                _expectedClearCommand = command;
-                _clearReply = reply;
-                _status.Text = $"Cancellazione {target} · passaggio {step}/{stepCount}";
-                if (!SendSelected(frame, $"Clear {target} · passaggio {step}/{stepCount}"))
-                    throw new IOException($"Invio del comando {command} fallito.");
-
-                string result;
-                try
+                for (int step = 1; step <= stepCount; step++)
                 {
-                    result = await reply.Task.WaitAsync(TimeSpan.FromSeconds(5), clear.Token);
+                    string frame = address is int number
+                        ? SchneiderProtocol.ClearLampStep(currentLine, number, step)
+                        : SchneiderProtocol.ClearLineStep(currentLine, step);
+                    string clearing = bothLines ? $"linea {(char)('A' + currentLine)}" : target;
+                    string progress = $"Clear {clearing} · passaggio {step}/{stepCount}";
+                    _status.Text = progress;
+                    await RequestReplyAsync(frame, progress, clear.Token);
                 }
-                catch (TimeoutException)
-                {
-                    throw new IOException($"Nessun esito per il comando {command}, passaggio {step}.");
-                }
-                if (result != "00")
-                    throw new IOException($"Comando {command}, passaggio {step}: esito {result}.");
             }
             Log($"Clear {target}: tutti i passaggi accettati.");
         }
@@ -779,8 +789,8 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            _clearReply = null;
-            _expectedClearCommand = null;
+            _commandReply = null;
+            _expectedCommand = null;
             _clearLine = null;
             if (!IsDisposed && !Disposing && ReferenceEquals(_client, client) && client.Connected)
             {
@@ -954,10 +964,10 @@ internal sealed class MainForm : Form
                         if (_addressReply is { } reply && SchneiderProtocol.TryReadLampStatus(frame, out var lamp) &&
                             lamp.Index == _requestedAddress)
                             reply.TrySetResult(lamp);
-                        if (_clearReply is { } clearReply && _expectedClearCommand is { } expected &&
-                            SchneiderProtocol.TryReadReplyStatus(frame, expected, out string result))
-                            clearReply.TrySetResult(result);
-                        if (frame == "$0013230000*" && ReferenceEquals(_client, client) &&
+                        if (_commandReply is { } clearReply && _expectedCommand is { } expected &&
+                            SchneiderProtocol.TryReadReplyStatus(frame, expected, out _))
+                            clearReply.TrySetResult(frame);
+                        if (!_installer && frame == "$0013230000*" && ReferenceEquals(_client, client) &&
                             _addressScan is null && _clearLine is null)
                         {
                             _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
@@ -1006,6 +1016,9 @@ internal sealed class MainForm : Form
     private void Disconnect()
     {
         _addressScan?.Cancel();
+        _installerWork?.Cancel();
+        _installerAuthenticated = false;
+        if (_installer) ResetInstallerAddressing();
         _lampMap?.Close();
         _clearLine?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
@@ -1019,5 +1032,6 @@ internal sealed class MainForm : Form
         _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";
         Log("Socket chiuso.");
+        if (_installer) UpdateInstallerControls();
     }
 }

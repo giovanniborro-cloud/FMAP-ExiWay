@@ -4,7 +4,7 @@ namespace SchneiderLoader;
 
 internal enum NcuLines { Both, A, B }
 
-internal sealed record NcuProfile(string Name, string Mac, string Building, int ControllerAddress, NcuLines Lines)
+internal sealed record NcuProfile(string Name, string Mac, string Building, int ControllerAddress, NcuLines Lines, string? BluetoothName = null)
 {
     public override string ToString() =>
         $"{Building} · {ControllerAddress:00} · {NcuProfiles.LineLabel(Lines)} · {(Name.Length == 0 ? Mac : Name)}";
