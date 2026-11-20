@@ -14,7 +14,7 @@ internal sealed class MainForm : Form
     private readonly Button _login = new() { Text = "Login 323", AutoSize = true, Enabled = false };
     private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
+    private readonly ToolTip _lightTips = new();
     private readonly ComboBox _savedNcus = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 276 };
     private readonly TextBox _building = new() { Width = 145, MaxLength = 80 };
     private readonly Button _saveNcu = new() { Text = "Salva NCU connessa", AutoSize = true, Enabled = false };
@@ -25,6 +25,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox _exportLines = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 87 };
     private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
     private readonly Button _lampStatuses = new() { Text = "Stato lampade → Excel", AutoSize = true, Enabled = false };
+    private readonly Button _showLampMap = new() { Text = "Mappa indirizzi", AutoSize = true, Enabled = false };
+    private LampAddressMap? _lampMap;
     private CancellationTokenSource? _clearLine;
     private TaskCompletionSource<string>? _clearReply;
     private string? _expectedClearCommand;
@@ -46,7 +48,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "OVA-GEN3 · Banco prova Exiway";
+        Text = "OVA-GEN3 · Linee Exiway";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Font;
         Font = new Font("Segoe UI", 10);
@@ -98,13 +100,6 @@ internal sealed class MainForm : Form
 
         _lineTarget.Items.AddRange(["A", "B", "A + B"]);
         _lineTarget.SelectedIndex = 0;
-        _lineCommands.Enabled = false;
-        AddCompactField(_lineCommands, "Tutta la linea", _lineTarget);
-        AddLineCommand("Accendi al massimo", 5);
-        AddLineCommand("Spegni", 0);
-        AddLineCommand("Identifica", 240);
-        header.Controls.Add(_lineCommands);
-
         _benchCommands = CreateBenchCommands();
         _benchCommands.Enabled = false;
         header.Controls.Add(_benchCommands);
@@ -114,7 +109,7 @@ internal sealed class MainForm : Form
         var inventory = CreateCompactRow();
         _exportLines.Items.AddRange(["A + B", "Solo A", "Solo B"]);
         _exportLines.SelectedIndex = 0;
-        inventory.Controls.AddRange([_findAddresses, _lampStatuses]);
+        inventory.Controls.AddRange([_findAddresses, _lampStatuses, _showLampMap]);
         header.Controls.Add(inventory);
 
         var manual = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2 };
@@ -180,7 +175,9 @@ internal sealed class MainForm : Form
         _send.Click += (_, _) => Send(_command.Text);
         _findAddresses.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false);
         _lampStatuses.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: true);
+        _showLampMap.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false, showMap: true);
         FormClosing += (_, _) => Disconnect();
+        Disposed += (_, _) => _lightTips.Dispose();
         Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
         try
@@ -424,7 +421,17 @@ internal sealed class MainForm : Form
             string target = selected.UsesNumber ? $"lampada {line.Text}{Number():00}" : $"selezione linea {line.Text}";
             SendSelected(loadedCommand, $"{selected.Label} · {target}");
         };
-        AddCompactField(panel, "Banco prova", line);
+        var lights = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = new Padding(0, 0, 6, 0)
+        };
+        AddCompactField(lights, "Tutta la linea", _lineTarget);
+        AddLineCommand(lights, "Accendi al massimo", 5);
+        AddLineCommand(lights, "Spegni", 0);
+        AddLineCommand(lights, "Identifica", 240);
+        panel.Controls.Add(lights);
+        AddCompactField(panel, "Linea", line);
         AddCompactField(panel, "Numero", number);
         AddCompactField(panel, "Funzione", function);
         AddCompactField(panel, "Operazione", operation);
@@ -450,9 +457,12 @@ internal sealed class MainForm : Form
         return panel;
     }
 
-    private void AddLineCommand(string label, int operation)
+    private void AddLineCommand(FlowLayoutPanel panel, string label, int operation)
     {
-        var button = new Button { Text = label, AutoSize = true };
+        var icon = LampCommandIcon.Create(operation);
+        var button = new Button { Image = icon, Size = new Size(34, 29), AccessibleName = label };
+        _lightTips.SetToolTip(button, label);
+        button.Disposed += (_, _) => icon.Dispose();
         button.Click += (_, _) =>
         {
             if (_lineTarget.SelectedIndex != 1 &&
@@ -461,7 +471,7 @@ internal sealed class MainForm : Form
             if (_lineTarget.SelectedIndex != 0)
                 SendSelected(SchneiderProtocol.LineCommand(1, operation), $"{label} · tutta la linea B");
         };
-        _lineCommands.Controls.Add(button);
+        panel.Controls.Add(button);
     }
 
     private bool SendSelected(string frame, string operation)
@@ -691,8 +701,8 @@ internal sealed class MainForm : Form
 
         using var clear = new CancellationTokenSource();
         _clearLine = clear;
-        _benchCommands.Enabled = _lineCommands.Enabled = _login.Enabled = _send.Enabled =
-            _findAddresses.Enabled = _lampStatuses.Enabled = false;
+        _benchCommands.Enabled = _login.Enabled = _send.Enabled =
+            _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = false;
         try
         {
             int stepCount = address.HasValue ? 4 : 3;
@@ -739,20 +749,20 @@ internal sealed class MainForm : Form
             _clearLine = null;
             if (!IsDisposed && !Disposing && ReferenceEquals(_client, client) && client.Connected)
             {
-                _benchCommands.Enabled = _lineCommands.Enabled = _login.Enabled = _send.Enabled =
-                    _findAddresses.Enabled = _lampStatuses.Enabled = true;
+                _benchCommands.Enabled = _login.Enabled = _send.Enabled =
+                    _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
                 _status.Text = "Autenticazione 323: ACK ricevuto";
             }
         }
     }
 
-    private async Task ToggleInventoryAsync(bool includeLampStatus)
+    private async Task ToggleInventoryAsync(bool includeLampStatus, bool showMap = false)
     {
         if (_addressScan is { } activeScan) activeScan.Cancel();
-        else await ExportInventoryAsync(includeLampStatus);
+        else await ReadInventoryAsync(includeLampStatus, showMap);
     }
 
-    private async Task ExportInventoryAsync(bool includeLampStatus)
+    private async Task ReadInventoryAsync(bool includeLampStatus, bool showMap)
     {
         var client = _client;
         if (client is null || !client.Connected) return;
@@ -760,36 +770,52 @@ internal sealed class MainForm : Form
         int controllerAddress = (int)_exportControllerAddress.Value;
         string building = _building.Text;
         var reportLines = SelectedReportLines;
-        int firstLine = _exportLines.SelectedIndex == 2 ? 1 : 0;
-        int lastLine = _exportLines.SelectedIndex == 1 ? 0 : 1;
-        if (AddressWorkbook.BusNumber(controllerAddress, lastLine) > 99)
+        int firstLine = !showMap && _exportLines.SelectedIndex == 2 ? 1 : 0;
+        int lastLine = !showMap && _exportLines.SelectedIndex == 1 ? 0 : 1;
+        if (!showMap && AddressWorkbook.BusNumber(controllerAddress, lastLine) > 99)
         {
             Log("L'indirizzo 50 consente solo la linea A (BUS L99). La linea B produrrebbe BUS 100.");
             return;
         }
-        string lines = _exportLines.Text;
+        string lines = showMap ? "A + B" : _exportLines.Text;
         int firstIndex = firstLine * 64;
         int endIndex = (lastLine + 1) * 64;
         int count = endIndex - firstIndex;
 
         using var scan = new CancellationTokenSource();
         _addressScan = scan;
-        var activeButton = includeLampStatus ? _lampStatuses : _findAddresses;
+        var activeButton = showMap ? _showLampMap : includeLampStatus ? _lampStatuses : _findAddresses;
         string originalLabel = activeButton.Text;
         activeButton.Text = "Annulla ricerca";
-        (includeLampStatus ? _findAddresses : _lampStatuses).Enabled = false;
+        _findAddresses.Enabled = activeButton == _findAddresses;
+        _lampStatuses.Enabled = activeButton == _lampStatuses;
+        _showLampMap.Enabled = activeButton == _showLampMap;
         _building.Enabled = _exportControllerAddress.Enabled = _exportLines.Enabled = _saveNcu.Enabled = false;
-        string reportTitle = includeLampStatus ? "Stato lampade" : "Indirizzi";
-        _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
+        string reportTitle = showMap ? "Mappa indirizzi" : includeLampStatus ? "Stato lampade" : "Indirizzi";
+        _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
         var addresses = new List<LampAddressStatus>();
+        LampAddressMap? map = null;
         Log($"{reportTitle}: {lines} sulla connessione attiva · indirizzo centralina per Excel {controllerAddress:00}.");
         try
         {
+            if (showMap)
+            {
+                _lampMap?.Close();
+                map = new LampAddressMap();
+                _lampMap = map;
+                map.FormClosed += (_, _) =>
+                {
+                    if (ReferenceEquals(_addressScan, scan)) scan.Cancel();
+                    if (ReferenceEquals(_lampMap, map)) _lampMap = null;
+                };
+                map.Show(this);
+            }
             for (int index = firstIndex; index < endIndex; index++)
             {
                 scan.Token.ThrowIfCancellationRequested();
                 var target = new LampAddressStatus(index, false, false);
                 _status.Text = $"Ricerca {target.Address} ({index - firstIndex + 1}/{count})";
+                map?.ShowProgress(_status.Text);
                 _requestedAddress = index;
                 var reply = new TaskCompletionSource<LampAddressStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _addressReply = reply;
@@ -806,10 +832,16 @@ internal sealed class MainForm : Form
                     throw new TimeoutException($"Nessuna risposta valida per {target.Address}.");
                 }
                 if (status.Assigned) addresses.Add(status);
+                if (map is { IsDisposed: false }) map.SetAddress(status);
             }
 
             scan.Token.ThrowIfCancellationRequested();
             Log($"Ricerca completata: {addresses.Count} indirizzi registrati su {count} verificati.");
+            if (map is { IsDisposed: false })
+            {
+                map.ShowProgress($"{addresses.Count} registrati · verde: registrato · bianco: libero");
+                return;
+            }
             using var save = new SaveFileDialog
             {
                 Title = $"Esporta in Excel · {reportTitle}", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
@@ -825,10 +857,12 @@ internal sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
+            if (map is { IsDisposed: false }) map.ShowProgress("Ricerca annullata · risultati parziali");
             Log("Ricerca indirizzi annullata.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TimeoutException)
         {
+            if (map is { IsDisposed: false }) map.ShowProgress($"Ricerca incompleta · {ex.Message}");
             Log($"Ricerca o salvataggio non completati: {ex.Message}");
         }
         finally
@@ -842,7 +876,7 @@ internal sealed class MainForm : Form
                 _scan.Enabled = true;
                 if (ReferenceEquals(_client, client) && client.Connected)
                 {
-                    _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
+                    _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
                     _saveNcu.Enabled = true;
                     _status.Text = "Autenticazione 323: ACK ricevuto";
                 }
@@ -891,7 +925,7 @@ internal sealed class MainForm : Form
                         if (frame == "$0013230000*" && ReferenceEquals(_client, client) &&
                             _addressScan is null && _clearLine is null)
                         {
-                            _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
+                            _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
                     }
@@ -921,7 +955,7 @@ internal sealed class MainForm : Form
             Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
             if (isLogin)
             {
-                _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = false;
+                _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
                 Log("Login 323 inviato.");
             }
@@ -937,6 +971,7 @@ internal sealed class MainForm : Form
     private void Disconnect()
     {
         _addressScan?.Cancel();
+        _lampMap?.Close();
         _clearLine?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
@@ -944,7 +979,7 @@ internal sealed class MainForm : Form
         _mac.ReadOnly = false;
         _devices.Enabled = true;
         _saveNcu.Enabled = false;
-        _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = false;
+        _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = false;
         _connect.Enabled = true;
         _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
         _status.Text = "Disconnesso";
