@@ -53,6 +53,23 @@ internal sealed class MainForm : Form
 
         var devices = CreateCompactRow();
         devices.Margin = Padding.Empty;
+
+        using var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("OvaGen3.ico")!;
+        using var embeddedIcon = new Icon(iconStream, 32, 32);
+        var windowIcon = (Icon)embeddedIcon.Clone();
+        Icon = windowIcon;
+        var logoImage = embeddedIcon.ToBitmap();
+        var logo = new PictureBox
+        {
+            Image = logoImage, Size = new Size(27, 27), SizeMode = PictureBoxSizeMode.Zoom,
+            Margin = new Padding(2, 2, 5, 2), AccessibleName = "Logo OVA-GEN3"
+        };
+        devices.Controls.Add(logo);
+        Disposed += (_, _) =>
+        {
+            logoImage.Dispose();
+            windowIcon.Dispose();
+        };
         AddCompactField(devices, "Connessione Bluetooth", _devices);
         var discovery = new FlowLayoutPanel
         {

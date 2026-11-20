@@ -3,9 +3,13 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets/OvaGen3.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(ApplicationIcon)" LogicalName="OvaGen3.ico" />
+  </ItemGroup>
   <!-- Escludi i moduli legacy anche se rimangono nella directory dopo una sovrascrittura. -->
   <ItemGroup>
     <Compile Remove="ModbusRtuClient.cs" />
