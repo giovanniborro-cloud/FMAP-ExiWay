@@ -1,6 +1,6 @@
 # Installazione OVA-GEN3
 
-Sorgenti della build Release: commit `33aa244`.
+Sorgenti della build Release: commit `e26f4dc`.
 
 | Tipo di Windows | Pacchetto |
 | --- | --- |
