@@ -8,21 +8,26 @@ internal sealed partial class MainForm
     private bool _installerConnecting;
     private CancellationTokenSource? _installerWork;
     private readonly ComboBox _installerLine = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 54 };
-    private readonly NumericUpDown _installerFirst = new() { Minimum = 0, Maximum = 63, Width = 56 };
-    private readonly NumericUpDown _installerSecond = new() { Minimum = 0, Maximum = 63, Value = 1, Width = 56 };
+    private readonly ComboBox _installerFirst = CreateInstallerNumber(0);
+    private readonly ComboBox _installerSecond = CreateInstallerNumber(1);
     private readonly CheckBox _installerUseSecond = new() { Text = "Secondo numero", AutoSize = true };
     private readonly Button _installerReset = new() { Text = "Azzera centrale", AutoSize = true };
     private readonly Button _installerDelete = new() { Text = "Cancella un numero", AutoSize = true };
-    private readonly Button _installerStart = new() { Text = "1. Avvia sessione", AutoSize = true };
-    private readonly Button _installerPropose = new() { Text = "2. Invia numero", AutoSize = true };
-    private readonly Button _installerConfirm = new() { Text = "3. Conferma laser", AutoSize = true };
-    private readonly Button _installerFinish = new() { Text = "4. Chiudi e verifica", AutoSize = true };
+    private readonly Button _installerAssign = new() { Text = "Assegna numeri", AutoSize = true };
+    private readonly Button _installerConfirm = new() { Text = "Conferma laser", AutoSize = true, Visible = false };
+    private readonly Button _installerCancel = new() { Text = "Annulla numerazione", AutoSize = true, Visible = false };
+    private TaskCompletionSource<bool>? _laserConfirmation;
+    private bool _installerAssigning;
     private int _sessionLine;
-    private int[] _sessionNumbers = [];
-    private int _laserConfirmed;
-    private bool _waitingForLaser;
     private bool _sessionOpen;
-    private bool _sessionStarted;
+
+    private static ComboBox CreateInstallerNumber(int selected)
+    {
+        var numbers = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 62 };
+        numbers.Items.AddRange(Enumerable.Range(0, 64).Select(number => number.ToString()).ToArray());
+        numbers.SelectedIndex = selected;
+        return numbers;
+    }
 
     private Control CreateInstallerControls()
     {
@@ -41,22 +46,19 @@ internal sealed partial class MainForm
         AddCompactField(addressing, "Numero 2", _installerSecond);
         addressing.Controls.Add(_installerDelete);
         var steps = CreateCompactRow();
-        steps.Controls.AddRange([_installerStart, _installerPropose, _installerConfirm, _installerFinish]);
+        steps.Controls.AddRange([_installerAssign, _installerConfirm, _installerCancel]);
 
         _installerUseSecond.CheckedChanged += (_, _) => UpdateInstallerControls();
         _installerReset.Click += async (_, _) => await RunInstallerAsync(_ => ClearAddressesAsync(0, null, bothLines: true));
         _installerDelete.Click += async (_, _) => await RunInstallerAsync(_ =>
-            ClearAddressesAsync(_installerLine.SelectedIndex, (int)_installerFirst.Value));
-        _installerStart.Click += async (_, _) => await RunInstallerAsync(StartInstallerAddressingAsync);
-        _installerPropose.Click += async (_, _) => await RunInstallerAsync(ProposeInstallerNumberAsync);
-        _installerConfirm.Click += (_, _) =>
+            ClearAddressesAsync(_installerLine.SelectedIndex, _installerFirst.SelectedIndex));
+        _installerAssign.Click += async (_, _) => await RunInstallerAsync(AssignInstallerNumbersAsync);
+        _installerConfirm.Click += (_, _) => _laserConfirmation?.TrySetResult(true);
+        _installerCancel.Click += (_, _) =>
         {
-            _laserConfirmed++;
-            _waitingForLaser = false;
-            Log($"Conferma laser dichiarata per {InstallerAddress(_sessionLine, _sessionNumbers[_laserConfirmed - 1])}.");
+            _installerWork?.Cancel();
             UpdateInstallerControls();
         };
-        _installerFinish.Click += async (_, _) => await RunInstallerAsync(FinishInstallerAddressingAsync);
         UpdateInstallerControls();
         return CreateSection("Tecnico Installatore", connection, addressing, steps);
     }
@@ -70,14 +72,14 @@ internal sealed partial class MainForm
             ? _installerWork?.IsCancellationRequested == false
             : idle && _client is not null;
         _disconnect.Text = _installerConnecting ? "Annulla connessione" : "Disconnessione";
-        _installerReset.Enabled = _installerDelete.Enabled = _installerStart.Enabled = ready && !_sessionOpen;
+        _installerReset.Enabled = _installerDelete.Enabled = _installerAssign.Enabled = ready && !_sessionOpen;
         _installerLine.Enabled = _installerFirst.Enabled = _installerUseSecond.Enabled = ready && !_sessionOpen;
         _installerSecond.Enabled = ready && !_sessionOpen && _installerUseSecond.Checked;
-        _installerPropose.Enabled = ready && _sessionStarted && !_waitingForLaser && _laserConfirmed < _sessionNumbers.Length;
-        _installerConfirm.Enabled = ready && _sessionOpen && _waitingForLaser;
-        _installerFinish.Enabled = ready && _sessionOpen;
-        _installerFinish.Text = _sessionOpen && _laserConfirmed < _sessionNumbers.Length
-            ? "4. Chiudi sessione incompleta" : "4. Chiudi e verifica";
+        _installerConfirm.Visible = _laserConfirmation is not null;
+        _installerConfirm.Enabled = _laserConfirmation is { Task.IsCompleted: false } &&
+            _installerWork?.IsCancellationRequested == false;
+        _installerCancel.Visible = _installerAssigning;
+        _installerCancel.Enabled = _installerAssigning && _installerWork?.IsCancellationRequested == false;
     }
 
     private Task ConnectInstallerAsync() => RunInstallerAsync(async token =>
@@ -90,37 +92,58 @@ internal sealed partial class MainForm
                 : "Sono presenti profili con Palazzo = TEST e MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
 
         string mac = macs[0];
-        _status.Text = "Ricerca centralina Test…";
-        Log($"Ricerca Bluetooth della centralina Test [{mac}].");
-        BluetoothDiscovery.Device? detected = null;
-        while (detected is null)
-        {
-            var devices = await Task.Run(BluetoothDiscovery.ScanNearby, token);
-            token.ThrowIfCancellationRequested();
-            detected = devices.FirstOrDefault(device => device.Mac == mac);
-            if (detected is null)
-            {
-                Log("Test non ancora rilevata. La ricerca continua.");
-                await Task.Delay(TimeSpan.FromSeconds(2), token);
-            }
-        }
-        Log($"Test rilevata [{detected.Mac}].");
-        string? ncuName = new[] { detected.Name }
-            .Concat(testProfiles.Select(profile => profile.BluetoothName))
-            .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
-            .FirstOrDefault(name => name is { Length: 11 } && name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase));
-        if (ncuName is null)
-            throw new IOException("Nome Bluetooth NCU di Test non disponibile. Verifica che Test sia rilevabile o salvala di nuovo come Esperto.");
-
-        _mac.Text = mac;
-        _name.Text = testProfiles[0].Name;
-
         try
         {
-            await ConnectAsync(token);
-            token.ThrowIfCancellationRequested();
-            if (_client?.Connected != true) return;
-            await RequestReplyAsync(SchneiderProtocol.Login(ncuName[3..]), "Login automatico Test", token);
+            string? defaultPassword = null;
+            while (_client?.Connected != true)
+            {
+                _status.Text = "Ricerca centralina Test…";
+                Log($"Ricerca Bluetooth della centralina Test [{mac}].");
+                var devices = await Task.Run(BluetoothDiscovery.Scan, token);
+                token.ThrowIfCancellationRequested();
+                var detected = devices.FirstOrDefault(device => device.Mac == mac);
+                if (detected is not null)
+                {
+                    Log($"MAC di Test presente nei risultati della ricerca. Verifica tramite connessione RFCOMM a {mac}.");
+                    defaultPassword = new[] { detected.Name }
+                        .Concat(testProfiles.Select(profile => profile.BluetoothName))
+                        .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
+                        .Select(SchneiderProtocol.DefaultPassword)
+                        .FirstOrDefault(password => password is not null) ?? defaultPassword;
+                    _mac.Text = mac;
+                    _name.Text = detected.Name.Length > 0 ? detected.Name : testProfiles[0].Name;
+                    await ConnectAsync(token);
+                    token.ThrowIfCancellationRequested();
+                    if (_client?.Connected == true) break;
+                    UpdateInstallerControls();
+                    Log("Test non ha aperto la connessione RFCOMM. La ricerca continua.");
+                }
+                else Log("MAC di Test non presente nei risultati. La ricerca continua.");
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
+            }
+
+            string? loginFrame = null;
+            try
+            {
+                loginFrame = NcuLoginStore.Read(mac);
+                if (loginFrame is not null && !SchneiderProtocol.IsLoginRequest(loginFrame))
+                    loginFrame = null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+            {
+                Log("Login protetto non disponibile per questo utente Windows.");
+            }
+
+            if (loginFrame is null)
+            {
+                if (defaultPassword is null)
+                    throw new IOException("Password non ricavabile dal nome NCU. Esegui un login riuscito su Test in modalità Esperto.");
+                loginFrame = SchneiderProtocol.Login(defaultPassword);
+                Log("Uso la password predefinita ricavata dal nome Bluetooth NCU.");
+            }
+            else Log("Uso il login già confermato in modalità Esperto.");
+
+            await RequestReplyAsync(loginFrame, "Login automatico Test", token);
             token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;
             _status.Text = "Test connessa · login confermato";
@@ -184,57 +207,78 @@ internal sealed partial class MainForm
         }
     }
 
-    private async Task StartInstallerAddressingAsync(CancellationToken token)
+    private async Task AssignInstallerNumbersAsync(CancellationToken token)
     {
         int line = _installerLine.SelectedIndex;
-        int first = (int)_installerFirst.Value;
-        int[] numbers = _installerUseSecond.Checked ? [first, (int)_installerSecond.Value] : [first];
+        int first = _installerFirst.SelectedIndex;
+        int[] numbers = _installerUseSecond.Checked ? [first, _installerSecond.SelectedIndex] : [first];
         if (numbers.Length == 2 && numbers[0] == numbers[1])
             throw new IOException("Scegli due numeri distinti.");
 
-        foreach (int number in numbers)
+        var client = _client;
+        _installerAssigning = true;
+        UpdateInstallerControls();
+        try
         {
-            if ((await ReadInstallerAddressAsync(line, number, token)).Assigned)
-                throw new IOException($"{InstallerAddress(line, number)} risulta già registrato.");
+            foreach (int number in numbers)
+            {
+                if ((await ReadInstallerAddressAsync(line, number, token)).Assigned)
+                    throw new IOException($"{InstallerAddress(line, number)} risulta già registrato.");
+            }
+
+            _sessionLine = line;
+            _sessionOpen = true;
+            try
+            {
+                await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 1, first),
+                    $"Avvia sessione linea {(char)('A' + line)}", token);
+                foreach (int number in numbers)
+                {
+                    string target = InstallerAddress(line, number);
+                    await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 2, number), $"Proponi {target}", token);
+                    string reply = await RequestReplyAsync(SchneiderProtocol.Command(134), $"Verifica numero proposto {target}", token);
+                    if (!SchneiderProtocol.TryReadNextAddress(reply, out int proposed) || proposed != number)
+                        throw new IOException($"La centralina non ha confermato il numero {target}.");
+
+                    _status.Text = $"Conferma {target} sulla lampada con il laser";
+                    Log($"{_status.Text}, poi premi Conferma laser.");
+                    var confirmation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _laserConfirmation = confirmation;
+                    _installerConfirm.Text = $"Laser confermato per {target}";
+                    UpdateInstallerControls();
+                    try { await confirmation.Task.WaitAsync(token); }
+                    finally
+                    {
+                        _laserConfirmation = null;
+                        UpdateInstallerControls();
+                    }
+                    token.ThrowIfCancellationRequested();
+                    Log($"Conferma laser ricevuta per {target}.");
+                }
+            }
+            finally
+            {
+                if (_sessionOpen && client is { Connected: true } && ReferenceEquals(_client, client))
+                {
+                    await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 3, 0),
+                        "Chiudi automaticamente la sessione", CancellationToken.None);
+                    _sessionOpen = false;
+                }
+            }
+
+            int updated = 0;
+            foreach (int number in numbers)
+            {
+                if ((await ReadInstallerAddressAsync(line, number, token)).Assigned) updated++;
+            }
+            _status.Text = $"Verifica conclusa · {updated}/{numbers.Length} registrati";
+            Log($"Verifica finale: {updated} di {numbers.Length} numeri risultano registrati.");
         }
-
-        _sessionLine = line;
-        _sessionNumbers = numbers;
-        _laserConfirmed = 0;
-        _waitingForLaser = false;
-        _sessionOpen = true;
-        await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 1, first),
-            $"Avvia sessione linea {(char)('A' + line)}", token);
-        _sessionStarted = true;
-        Log("Sessione aperta. Invia il primo numero.");
-    }
-
-    private async Task ProposeInstallerNumberAsync(CancellationToken token)
-    {
-        int number = _sessionNumbers[_laserConfirmed];
-        string target = InstallerAddress(_sessionLine, number);
-        await RequestReplyAsync(SchneiderProtocol.SequentialAddress(_sessionLine, 2, number), $"Proponi {target}", token);
-        string reply = await RequestReplyAsync(SchneiderProtocol.Command(134), $"Verifica numero proposto {target}", token);
-        if (!SchneiderProtocol.TryReadNextAddress(reply, out int proposed) || proposed != number)
-            throw new IOException($"La centralina non ha confermato il numero {target}. Chiudi la sessione o riproponi il numero.");
-        _waitingForLaser = true;
-        Log($"Conferma {target} sulla lampada con il laser, poi premi Conferma laser.");
-    }
-
-    private async Task FinishInstallerAddressingAsync(CancellationToken token)
-    {
-        int line = _sessionLine;
-        int[] numbers = _sessionNumbers;
-        await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 3, 0), "Chiudi sessione", token);
-        ResetInstallerAddressing();
-
-        int updated = 0;
-        foreach (int number in numbers)
+        finally
         {
-            var status = await ReadInstallerAddressAsync(line, number, token);
-            if (status.Assigned) updated++;
+            _installerAssigning = false;
+            _laserConfirmation = null;
         }
-        Log($"Verifica finale: {updated} di {numbers.Length} numeri risultano registrati.");
     }
 
     private async Task<LampAddressStatus> ReadInstallerAddressAsync(int line, int number, CancellationToken token)
@@ -250,9 +294,7 @@ internal sealed partial class MainForm
 
     private void ResetInstallerAddressing()
     {
-        _sessionOpen = _sessionStarted = _waitingForLaser = false;
-        _sessionNumbers = [];
-        _laserConfirmed = 0;
+        _sessionOpen = false;
     }
 
     private async Task<string> RequestReplyAsync(string frame, string operation, CancellationToken token)

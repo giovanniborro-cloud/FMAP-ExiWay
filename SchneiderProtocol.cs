@@ -12,6 +12,13 @@ internal static class SchneiderProtocol
 {
     // Proven by the PEAQ PET-101 capture on 2026-11-17:
     // TX $00132301533fab915       00*   RX $0013230000*
+    public static string? DefaultPassword(string? name) =>
+        name is { Length: 11 } && name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) ? name[3..] : null;
+
+    public static bool IsLoginRequest(string frame) =>
+        frame.Length == 28 && frame.StartsWith("$001323015", StringComparison.Ordinal) &&
+        frame.EndsWith("00*", StringComparison.Ordinal);
+
     public static string Login(string password)
     {
         if (password.Length > 15 || password.Any(c => c > 0x7F))

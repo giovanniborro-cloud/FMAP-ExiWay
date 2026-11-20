@@ -44,6 +44,8 @@ internal sealed partial class MainForm : Form
     private Control _benchCommands = new Panel();
     private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
+    private string? _pendingExpertLogin;
+    private string? _acceptedExpertLogin;
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
 
@@ -173,8 +175,8 @@ internal sealed partial class MainForm : Form
         };
         _name.TextChanged += (_, _) =>
         {
-            if (_name.Text.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && _name.Text.Length == 11)
-                _password.Text = _name.Text[3..];
+            if (SchneiderProtocol.DefaultPassword(_name.Text) is { } password)
+                _password.Text = password;
         };
         _connect.Click += async (_, _) =>
         {
@@ -288,8 +290,8 @@ internal sealed partial class MainForm : Form
             _password.Clear();
             _name.Text = profile.Name;
             _mac.Text = profile.Mac;
-            if (profile.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && profile.Name.Length == 11)
-                _password.Text = profile.Name[3..];
+            _password.Text = SchneiderProtocol.DefaultPassword(profile.BluetoothName)
+                ?? SchneiderProtocol.DefaultPassword(profile.Name) ?? "";
         }
         ApplyProfileLocation(profile);
         Log($"Profilo NCU caricato: {profile} [{profile.Mac}].");
@@ -315,6 +317,7 @@ internal sealed partial class MainForm : Form
             NcuProfiles.Save(NcuProfiles.LocalPath, updated);
             SetProfiles(updated, profile);
             _locationMac = profile.Mac;
+            if (_acceptedExpertLogin is { } accepted) SaveVerifiedLogin(profile.Mac, accepted);
             Log($"Profilo NCU salvato: {profile} [{profile.Mac}].");
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -639,6 +642,19 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    private void SaveVerifiedLogin(string mac, string frame)
+    {
+        try
+        {
+            NcuLoginStore.Save(mac, frame);
+            Log("Login 323 verificato e salvato nella configurazione protetta di Windows.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+        {
+            Log("Impossibile salvare il login 323 nella configurazione protetta di Windows.");
+        }
+    }
+
     private async Task ScanAsync()
     {
         _scan.Enabled = false;
@@ -674,10 +690,8 @@ internal sealed partial class MainForm : Form
         if (_refreshingDeviceNames || !_connect.Enabled ||
             _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
         _name.Text = item.DisplayName;
-        string loginName = item.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && item.Name.Length == 11
-            ? item.Name : item.DisplayName;
-        _password.Text = loginName.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && loginName.Length == 11
-            ? loginName[3..] : "";
+        _password.Text = SchneiderProtocol.DefaultPassword(item.Name)
+            ?? SchneiderProtocol.DefaultPassword(item.DisplayName) ?? "";
         _mac.Text = item.Mac;
         Log($"Selezionato {item}");
     }
@@ -981,6 +995,14 @@ internal sealed partial class MainForm : Form
                         if (!_installer && frame == "$0013230000*" && ReferenceEquals(_client, client) &&
                             _addressScan is null && _clearLine is null)
                         {
+                            if (_pendingExpertLogin is { } accepted)
+                            {
+                                _acceptedExpertLogin = accepted;
+                                _pendingExpertLogin = null;
+                                if (_connectedMac is { } mac && _profiles.Any(profile => profile.Mac == mac &&
+                                    profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase)))
+                                    SaveVerifiedLogin(mac, accepted);
+                            }
                             _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
@@ -1011,6 +1033,8 @@ internal sealed partial class MainForm : Form
             Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
             if (isLogin)
             {
+                if (!_installer)
+                    _pendingExpertLogin = SchneiderProtocol.IsLoginRequest(frame) ? frame : null;
                 _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
                 Log("Login 323 inviato.");
@@ -1035,6 +1059,7 @@ internal sealed partial class MainForm : Form
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
         _connectedMac = null;
+        _pendingExpertLogin = _acceptedExpertLogin = null;
         _mac.ReadOnly = false;
         _devices.Enabled = true;
         _saveNcu.Enabled = false;
