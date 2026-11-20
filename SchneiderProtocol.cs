@@ -40,6 +40,13 @@ internal static class SchneiderProtocol
 
     public static string ClearLampStep(int line, int address, int step)
     {
+        if (step == 4)
+        {
+            int recordIndex = line * 64 + address + 1;
+            // eCommission clears the controller's lamp record after the three DALI frames.
+            return Command(41, FormattableString.Invariant($"{recordIndex:000}320001") + new string(' ', 20));
+        }
+
         int daliAddress = (address << 1) | 1;
         string payload = step switch
         {

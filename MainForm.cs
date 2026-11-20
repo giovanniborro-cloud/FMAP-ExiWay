@@ -344,7 +344,6 @@ internal sealed class MainForm : Form
         int Number() => number.SelectedIndex;
         string Lamp(int action) => SchneiderProtocol.LampCommand(Line(), Number(), action);
         string Address(int action) => SchneiderProtocol.SequentialAddress(Line(), action, action == 3 ? 0 : Number());
-        string Clear(int step) => SchneiderProtocol.ClearLampStep(Line(), Number(), step);
 
         const string setSafeTime = "Imposta finestra test consentita (302)";
         (string Label, Func<string>? Format, bool UsesNumber)[][] groups =
@@ -357,9 +356,7 @@ internal sealed class MainForm : Form
             ],
             [
                 ("Cancella tutti gli indirizzi della linea", null, false),
-                ("Singola 1 · Prepara cancellazione (130)", () => Clear(1), false),
-                ("Singola 2 · Cancella numero lampada (130)", () => Clear(2), true),
-                ("Singola 3 · Interroga lampada (130)", () => Clear(3), true)
+                ("Cancella un indirizzo", null, true)
             ],
             [
                 ("Accendi lampada al massimo (017)", () => Lamp(5), true),
@@ -398,9 +395,15 @@ internal sealed class MainForm : Form
             InvalidateCommand();
             bool usesNumber = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].UsesNumber;
             number.Enabled = usesNumber;
-            bool clearsLine = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].Format is null;
-            send.Text = clearsLine ? $"Cancella tutta la linea {line.Text}"
-                : usesNumber ? $"Invia a {line.Text}{Number():00}" : "Invia comando";
+            bool clears = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].Format is null;
+            string address = $"{line.Text}{Number():00}";
+            send.Text = (clears, usesNumber) switch
+            {
+                (true, true) => $"Cancella {address}",
+                (true, false) => $"Cancella tutta la linea {line.Text}",
+                (false, true) => $"Invia a {address}",
+                _ => "Invia comando"
+            };
         }
 
         line.SelectedIndexChanged += (_, _) => UpdateSelection();
@@ -414,7 +417,7 @@ internal sealed class MainForm : Form
             var selected = groups[function.SelectedIndex][operation.SelectedIndex];
             if (selected.Format is null)
             {
-                await ClearLineAsync(Line());
+                await ClearAddressesAsync(Line(), selected.UsesNumber ? Number() : null);
                 return;
             }
             loadedCommand = selected.Format();
@@ -670,13 +673,17 @@ internal sealed class MainForm : Form
         finally { candidate?.Dispose(); }
     }
 
-    private async Task ClearLineAsync(int line)
+    private async Task ClearAddressesAsync(int line, int? address)
     {
         var client = _client;
         if (client?.Connected != true || _clearLine is not null || _addressScan is not null) return;
 
         char lineName = (char)('A' + line);
-        if (MessageBox.Show(this, $"Cancellare tutti gli indirizzi della linea {lineName}?",
+        string target = address.HasValue ? $"indirizzo {lineName}{address.Value:00}" : $"linea {lineName}";
+        string question = address.HasValue
+            ? $"Cancellare l'{target}?"
+            : $"Cancellare tutti gli indirizzi della {target}?";
+        if (MessageBox.Show(this, question,
             "Cancellazione indirizzi", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
@@ -688,16 +695,19 @@ internal sealed class MainForm : Form
             _findAddresses.Enabled = _lampStatuses.Enabled = false;
         try
         {
-            for (int step = 1; step <= 3; step++)
+            int stepCount = address.HasValue ? 4 : 3;
+            for (int step = 1; step <= stepCount; step++)
             {
                 clear.Token.ThrowIfCancellationRequested();
-                string frame = SchneiderProtocol.ClearLineStep(line, step);
+                string frame = address is int number
+                    ? SchneiderProtocol.ClearLampStep(line, number, step)
+                    : SchneiderProtocol.ClearLineStep(line, step);
                 string command = frame.Substring(4, 3);
                 var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _expectedClearCommand = command;
                 _clearReply = reply;
-                _status.Text = $"Cancellazione linea {lineName} · passaggio {step}/3";
-                if (!SendSelected(frame, $"Clear linea {lineName} · passaggio {step}/3"))
+                _status.Text = $"Cancellazione {target} · passaggio {step}/{stepCount}";
+                if (!SendSelected(frame, $"Clear {target} · passaggio {step}/{stepCount}"))
                     throw new IOException($"Invio del comando {command} fallito.");
 
                 string result;
@@ -712,15 +722,15 @@ internal sealed class MainForm : Form
                 if (result != "00")
                     throw new IOException($"Comando {command}, passaggio {step}: esito {result}.");
             }
-            Log($"Clear linea {lineName}: tutti e tre i passaggi accettati.");
+            Log($"Clear {target}: tutti i passaggi accettati.");
         }
         catch (OperationCanceledException)
         {
-            Log($"Clear linea {lineName} interrotto.");
+            Log($"Clear {target} interrotto.");
         }
         catch (IOException ex)
         {
-            Log($"Clear linea {lineName} non completato: {ex.Message}");
+            Log($"Clear {target} non completato: {ex.Message}");
         }
         finally
         {
