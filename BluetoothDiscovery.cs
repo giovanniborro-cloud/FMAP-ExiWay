@@ -7,11 +7,13 @@ internal static class BluetoothDiscovery
 {
     internal sealed record Device(string Name, string Mac, bool Paired, bool Connected)
     {
-        public bool IsNcu => Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase);
+        public string? SavedName { get; init; }
+        public string DisplayName => SavedName ?? Name;
+        public bool IsNcu => SavedName is not null || Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase);
 
         public override string ToString()
         {
-            string displayName = Name.Length == 0 ? "Dispositivo senza nome" : Name;
+            string displayName = DisplayName.Length == 0 ? "Dispositivo senza nome" : DisplayName;
             return $"{displayName} [{Mac}] · {(Paired ? "associato" : "non associato")}";
         }
     }

@@ -4,7 +4,7 @@ namespace SchneiderLoader;
 
 internal sealed class MainForm : Form
 {
-    private readonly ComboBox _devices = new() { Width = 285, DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _devices = new() { Width = 285, DropDownWidth = 440, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _mac = new() { Width = 160, PlaceholderText = "AA:BB:CC:DD:EE:FF" };
     private readonly TextBox _name = new() { Width = 135, Text = "NCU33fab915" };
     private readonly TextBox _password = new() { Width = 130, Text = "33fab915", UseSystemPasswordChar = true };
@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _building = new() { Width = 145, MaxLength = 80 };
     private readonly Button _saveNcu = new() { Text = "Salva NCU connessa", AutoSize = true, Enabled = false };
     private List<NcuProfile> _profiles = [];
+    private bool _refreshingDeviceNames;
     private string? _connectedMac;
     private string? _locationMac;
     private readonly NumericUpDown _exportControllerAddress = new() { Minimum = 1, Maximum = 50, Value = 1, Width = 54 };
@@ -226,6 +227,30 @@ internal sealed class MainForm : Form
             .ThenBy(profile => profile.Mac, StringComparer.Ordinal)
             .ToArray());
         _savedNcus.SelectedIndex = selection is null ? (_savedNcus.Items.Count > 0 ? 0 : -1) : _savedNcus.Items.IndexOf(selection);
+        RefreshDiscoveredNames();
+    }
+
+    private BluetoothDiscovery.Device WithSavedName(BluetoothDiscovery.Device device) =>
+        device with { SavedName = NcuProfiles.SavedNameForMac(_profiles, device.Mac) };
+
+    private void RefreshDiscoveredNames()
+    {
+        _refreshingDeviceNames = true;
+        _devices.BeginUpdate();
+        try
+        {
+            for (int index = 0; index < _devices.Items.Count; index++)
+            {
+                if (_devices.Items[index] is not BluetoothDiscovery.Device device) continue;
+                var updated = WithSavedName(device);
+                if (updated != device) _devices.Items[index] = updated;
+            }
+        }
+        finally
+        {
+            _devices.EndUpdate();
+            _refreshingDeviceNames = false;
+        }
     }
 
     private void LoadNcuProfile()
@@ -604,8 +629,14 @@ internal sealed class MainForm : Form
         _status.Text = "Ricerca Bluetooth Classic, anche non associati…";
         try
         {
-            var list = await Task.Run(BluetoothDiscovery.Scan);
+            var scanned = await Task.Run(BluetoothDiscovery.Scan);
             if (IsDisposed || Disposing) return;
+            var list = scanned.Select(WithSavedName)
+                .OrderByDescending(device => device.IsNcu)
+                .ThenBy(device => device.Paired)
+                .ThenBy(device => device.DisplayName.Length == 0)
+                .ThenBy(device => device.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
             _devices.Items.Clear();
             _devices.Items.AddRange(list.ToArray());
             _devices.SelectedIndex = _connect.Enabled
@@ -624,9 +655,13 @@ internal sealed class MainForm : Form
 
     private void SelectDevice()
     {
-        if (!_connect.Enabled || _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
-        if (!item.IsNcu) _password.Clear();
-        _name.Text = item.Name;
+        if (_refreshingDeviceNames || !_connect.Enabled ||
+            _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
+        _name.Text = item.DisplayName;
+        string loginName = item.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && item.Name.Length == 11
+            ? item.Name : item.DisplayName;
+        _password.Text = loginName.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && loginName.Length == 11
+            ? loginName[3..] : "";
         _mac.Text = item.Mac;
         Log($"Selezionato {item}");
     }
