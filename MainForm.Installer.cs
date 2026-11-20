@@ -159,7 +159,7 @@ internal sealed partial class MainForm
             if (_client?.Connected != true) return;
 
             Log("Login 323.");
-            await WaitForReplyAsync("323", Login, token);
+            await WaitForReplyAsync("323", () => LoginAsync(token), token);
             token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;
             _status.Text = "Test connessa · login confermato";
@@ -319,10 +319,10 @@ internal sealed partial class MainForm
         {
             Log(operation);
             _command.Text = frame;
-            return Send(frame);
+            return Task.FromResult(Send(frame));
         }, token);
 
-    private async Task<string> WaitForReplyAsync(string command, Func<bool> transmit, CancellationToken token)
+    private async Task<string> WaitForReplyAsync(string command, Func<Task<bool>> transmit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -330,7 +330,7 @@ internal sealed partial class MainForm
         _commandReply = reply;
         try
         {
-            if (!transmit())
+            if (!await transmit())
                 throw new IOException($"Invio del comando {command} fallito.");
             string response;
             var timeout = TimeSpan.FromSeconds(_installer && command == "323" ? 15 : 5);

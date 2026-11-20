@@ -44,6 +44,8 @@ internal sealed partial class MainForm : Form
     private Control _benchCommands = new Panel();
     private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
+    private static readonly TimeSpan LoginSettleTime = TimeSpan.FromSeconds(2);
+    private long _connectedAt;
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
 
@@ -190,7 +192,7 @@ internal sealed partial class MainForm : Form
             if (_installer) await DisconnectInstallerAsync();
             else Disconnect();
         };
-        _login.Click += (_, _) => Login();
+        _login.Click += async (_, _) => await LoginAsync();
         _autoLogin.CheckedChanged += (_, _) => Log(_autoLogin.Checked ? "Login automatico attivo." : "Login manuale attivo.");
         _send.Click += (_, _) => Send(_command.Text);
         _findAddresses.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false);
@@ -625,22 +627,45 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private bool Login()
+    private async Task<bool> LoginAsync(CancellationToken token = default)
     {
-        if (string.IsNullOrWhiteSpace(_password.Text))
+        var client = _client;
+        if (client?.Connected != true)
+        {
+            Log("Nessuna connessione aperta.");
+            return false;
+        }
+
+        string password = _password.Text;
+        if (string.IsNullOrWhiteSpace(password))
         {
             Log("Inserisci la password della centralina per il login 323.");
             return false;
         }
 
+        _login.Enabled = false;
         try
         {
-            return Send(SchneiderProtocol.Login(_password.Text));
+            TimeSpan remaining = LoginSettleTime - System.Diagnostics.Stopwatch.GetElapsedTime(_connectedAt);
+            if (remaining > TimeSpan.Zero)
+            {
+                Log("Attendo la stabilizzazione del canale RFCOMM prima del login 323.");
+                await Task.Delay(remaining, token);
+            }
+            token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(_client, client) || !client.Connected || IsDisposed || Disposing)
+                return false;
+            return Send(SchneiderProtocol.Login(password));
         }
         catch (ArgumentException ex)
         {
             Log($"Login non inviato: {ex.Message}");
             return false;
+        }
+        finally
+        {
+            if (!_installer && ReferenceEquals(_client, client) && !IsDisposed && !Disposing)
+                _login.Enabled = true;
         }
     }
 
@@ -718,6 +743,7 @@ internal sealed partial class MainForm : Form
             cancellation.ThrowIfCancellationRequested();
             if (IsDisposed || Disposing) return;
             _client = candidate;
+            _connectedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             candidate = null;
             _connectedMac = BluetoothRfcommClient.FormatAddress(address);
             _connectedBluetoothName = _devices.SelectedItem is BluetoothDiscovery.Device device &&
@@ -738,7 +764,7 @@ internal sealed partial class MainForm : Form
             Log("Socket RFCOMM aperto.");
             _reading = new CancellationTokenSource();
             _ = ReceiveLoopAsync(_client, _reading.Token);
-            if (!_installer && _autoLogin.Checked) Login();
+            if (!_installer && _autoLogin.Checked) await LoginAsync(cancellation);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
