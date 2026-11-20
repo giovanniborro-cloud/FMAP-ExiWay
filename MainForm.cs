@@ -161,7 +161,11 @@ internal sealed partial class MainForm : Form
             SetInitialSplit(logs, logs.ClientSize.Height / 2);
         };
 
-        _scan.Click += async (_, _) => await ScanAsync();
+        _scan.Click += async (_, _) =>
+        {
+            if (_installer) await SearchInstallerNcuAsync();
+            else await ScanAsync();
+        };
         _devices.SelectedIndexChanged += (_, _) => SelectDevice();
         _mac.TextChanged += (_, _) =>
         {
@@ -246,8 +250,8 @@ internal sealed partial class MainForm : Form
         RefreshDiscoveredNames();
     }
 
-    private BluetoothDiscovery.Device WithSavedName(BluetoothDiscovery.Device device) =>
-        device with { SavedName = NcuProfiles.SavedNameForMac(_profiles, device.Mac) };
+    private BluetoothDiscovery.Device WithSavedProfile(BluetoothDiscovery.Device device) =>
+        device with { SavedProfile = NcuProfiles.SavedProfileForMac(_profiles, device.Mac) };
 
     private void RefreshDiscoveredNames()
     {
@@ -258,7 +262,7 @@ internal sealed partial class MainForm : Form
             for (int index = 0; index < _devices.Items.Count; index++)
             {
                 if (_devices.Items[index] is not BluetoothDiscovery.Device device) continue;
-                var updated = WithSavedName(device);
+                var updated = WithSavedProfile(device);
                 if (updated != device) _devices.Items[index] = updated;
             }
         }
@@ -640,11 +644,13 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private async Task<List<BluetoothDiscovery.Device>> ScanControllersAsync(CancellationToken token)
+    private async Task<List<BluetoothDiscovery.Device>> ScanControllersAsync(CancellationToken token, string? requestedMac = null)
     {
         var scanned = await Task.Run(BluetoothDiscovery.Scan, token);
         token.ThrowIfCancellationRequested();
-        var list = scanned.Select(WithSavedName)
+        var list = scanned
+            .Where(device => requestedMac is null || string.Equals(device.Mac, requestedMac, StringComparison.OrdinalIgnoreCase))
+            .Select(WithSavedProfile)
             .OrderByDescending(device => device.IsNcu)
             .ThenBy(device => device.Paired)
             .ThenBy(device => device.DisplayName.Length == 0)
@@ -679,16 +685,15 @@ internal sealed partial class MainForm : Form
 
     private void SelectDevice()
     {
-        if (_refreshingDeviceNames || !_connect.Enabled ||
+        if (_installer || _refreshingDeviceNames || !_connect.Enabled ||
             _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
         SetConnectionDevice(item);
     }
 
     private void SetConnectionDevice(BluetoothDiscovery.Device item)
     {
-        _name.Text = item.DisplayName;
-        _password.Text = SchneiderProtocol.DefaultPassword(item.Name)
-            ?? SchneiderProtocol.DefaultPassword(item.DisplayName) ?? "";
+        _name.Text = item.LoginName;
+        _password.Text = SchneiderProtocol.DefaultPassword(item.LoginName) ?? "";
         _mac.Text = item.Mac;
         Log($"Selezionato {item}");
     }

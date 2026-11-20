@@ -83,10 +83,10 @@ internal static class NcuProfiles
         else profiles[index] = profile;
     }
 
-    public static string? SavedNameForMac(IEnumerable<NcuProfile> profiles, string mac) => profiles
-        .Where(profile => profile.Name.Length > 0 && string.Equals(profile.Mac, mac, StringComparison.OrdinalIgnoreCase))
+    public static NcuProfile? SavedProfileForMac(IEnumerable<NcuProfile> profiles, string mac) => profiles
+        .Where(profile => string.Equals(profile.Mac, mac, StringComparison.OrdinalIgnoreCase))
         .OrderBy(profile => profile.ControllerAddress)
-        .FirstOrDefault()?.Name;
+        .FirstOrDefault();
 
     public static string LineLabel(NcuLines lines) => lines switch { NcuLines.A => "A", NcuLines.B => "B", _ => "A+B" };
 

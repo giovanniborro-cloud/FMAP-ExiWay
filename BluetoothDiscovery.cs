@@ -7,9 +7,13 @@ internal static class BluetoothDiscovery
 {
     internal sealed record Device(string Name, string Mac, bool Paired, bool Connected)
     {
-        public string? SavedName { get; init; }
-        public string DisplayName => SavedName ?? Name;
-        public bool IsNcu => SavedName is not null || Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase);
+        public NcuProfile? SavedProfile { get; init; }
+        public string DisplayName => SavedProfile?.Building ?? Name;
+        public bool IsNcu => SavedProfile is not null || Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase);
+
+        public string LoginName => new[] { Name, SavedProfile?.BluetoothName, SavedProfile?.Name }
+            .FirstOrDefault(name => SchneiderProtocol.DefaultPassword(name) is not null)
+            ?? (Name.Length > 0 ? Name : SavedProfile?.Name ?? "");
 
         public override string ToString()
         {

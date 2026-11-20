@@ -6,6 +6,8 @@ internal sealed partial class MainForm
     private string? _connectedBluetoothName;
     private bool _installerAuthenticated;
     private bool _installerConnecting;
+    private BluetoothDiscovery.Device? _confirmedTestNcu;
+    private readonly Button _confirmTestNcu = new() { Text = "Conferma NCU", AutoSize = true };
     private CancellationTokenSource? _installerWork;
     private readonly ComboBox _installerLine = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 54 };
     private readonly ComboBox _installerFirst = CreateInstallerNumber(0);
@@ -31,14 +33,29 @@ internal sealed partial class MainForm
 
     private Control CreateInstallerControls()
     {
-        _connect.Text = "Connessione";
+        _connect.Text = "Connetti";
         _disconnect.Text = "Disconnessione";
+        _name.Clear();
+        _password.Clear();
+        _name.ReadOnly = _password.ReadOnly = true;
         _installerLine.Items.AddRange(["A", "B"]);
         _installerLine.SelectedIndex = 0;
 
         var connection = CreateCompactRow();
-        connection.Controls.AddRange([new Label { Text = "Centralina Test", AutoSize = true, Anchor = AnchorStyles.Left },
-            _connect, _disconnect, _installerReset]);
+        AddCompactField(connection, "Connessione Bluetooth", _devices);
+        connection.Controls.AddRange([_scan, _confirmTestNcu]);
+        var login = CreateCompactRow();
+        AddCompactField(login, "UID", _name);
+        AddCompactField(login, "Password app", _password);
+        login.Controls.AddRange([_connect, _disconnect, _installerReset]);
+        _confirmTestNcu.Click += (_, _) =>
+        {
+            if (_devices.SelectedItem is not BluetoothDiscovery.Device device) return;
+            SetConnectionDevice(device);
+            _confirmedTestNcu = device;
+            Log("NCU Test confermata. Premi Connetti per aprire la connessione e fare il login.");
+            UpdateInstallerControls();
+        };
         var addressing = CreateCompactRow();
         AddCompactField(addressing, "Linea", _installerLine);
         AddCompactField(addressing, "Numero", _installerFirst);
@@ -60,14 +77,18 @@ internal sealed partial class MainForm
             UpdateInstallerControls();
         };
         UpdateInstallerControls();
-        return CreateSection("Tecnico Installatore", connection, addressing, steps);
+        return CreateSection("Tecnico Installatore", connection, login, addressing, steps);
     }
 
     private void UpdateInstallerControls()
     {
         bool idle = _installerWork is null;
         bool ready = idle && _installerAuthenticated;
-        _connect.Enabled = idle && _client is null;
+        bool canSelectNcu = idle && _client is null;
+        _scan.Enabled = canSelectNcu;
+        _devices.Enabled = canSelectNcu && _devices.Items.Count > 0;
+        _confirmTestNcu.Enabled = canSelectNcu && _devices.SelectedItem is BluetoothDiscovery.Device;
+        _connect.Enabled = canSelectNcu && _confirmedTestNcu is not null;
         _disconnect.Enabled = _installerConnecting
             ? _installerWork?.IsCancellationRequested == false
             : idle && _client is not null;
@@ -82,29 +103,54 @@ internal sealed partial class MainForm
         _installerCancel.Enabled = _installerAssigning && _installerWork?.IsCancellationRequested == false;
     }
 
-    private Task ConnectInstallerAsync() => RunInstallerAsync(async token =>
+    private NcuProfile ReadTestProfile()
+    {
+        _profiles = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
+        var profiles = _profiles.Where(profile => profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(profile => profile.ControllerAddress).ToList();
+        int macCount = profiles.Select(profile => profile.Mac).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        if (macCount != 1)
+            throw new IOException(macCount == 0 ? "Nessun profilo NCU salvato con Palazzo = TEST."
+                : "Sono presenti profili con Palazzo = TEST e MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
+        return profiles[0];
+    }
+
+    private Task SearchInstallerNcuAsync() => RunInstallerAsync(async token =>
     {
         if (_client is not null) return;
-        _profiles = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
-        var testProfiles = _profiles.Where(profile => profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase)).ToList();
-        var macs = testProfiles.Select(profile => profile.Mac).Distinct(StringComparer.Ordinal).ToList();
-        if (macs.Count != 1)
-            throw new IOException(macs.Count == 0 ? "Nessun profilo NCU salvato con Palazzo = TEST."
-                : "Sono presenti profili con Palazzo = TEST e MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
-
-        string mac = macs[0];
-        _status.Text = "Cerca NCU…";
-        Log($"Cerca NCU · MAC del profilo con Palazzo TEST: {mac}.");
-        var devices = await ScanControllersAsync(token);
-        int index = devices.FindIndex(device => string.Equals(device.Mac, mac, StringComparison.OrdinalIgnoreCase));
-        if (index < 0)
-            throw new IOException($"Cerca NCU non ha rilevato il MAC di Test ({mac}).");
-
+        _confirmedTestNcu = null;
         _devices.Items.Clear();
-        _devices.Items.AddRange(devices.ToArray());
-        _devices.SelectedIndex = index;
-        SetConnectionDevice(devices[index]);
+        _name.Clear();
+        _mac.Clear();
+        _password.Clear();
+        var profile = ReadTestProfile();
+        _status.Text = "Cerca NCU…";
+        Log($"Cerca NCU · MAC del profilo con Palazzo TEST: {profile.Mac}.");
+        var devices = await ScanControllersAsync(token, profile.Mac);
+        token.ThrowIfCancellationRequested();
+        if (devices.Count == 0)
+            throw new IOException($"Cerca NCU non ha rilevato il MAC di Test ({profile.Mac}).");
 
+        _devices.Items.Add(devices[0] with { SavedProfile = profile });
+        _devices.SelectedIndex = 0;
+        _status.Text = "NCU Test rilevata · conferma la selezione";
+    }, connecting: true);
+
+    private Task ConnectInstallerAsync() => RunInstallerAsync(async token =>
+    {
+        if (_client is not null || _confirmedTestNcu is not { } device) return;
+        var profile = ReadTestProfile();
+        if (!string.Equals(device.Mac, profile.Mac, StringComparison.OrdinalIgnoreCase))
+        {
+            _confirmedTestNcu = null;
+            _devices.Items.Clear();
+            _name.Clear();
+            _mac.Clear();
+            _password.Clear();
+            throw new IOException("Il MAC di Test è cambiato. Esegui di nuovo Cerca NCU.");
+        }
+        if (string.IsNullOrWhiteSpace(_password.Text))
+            throw new IOException("Password non disponibile. Verifica il nome Bluetooth NCU del profilo Test.");
         try
         {
             Log("Connetti RFCOMM 1.");
