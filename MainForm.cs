@@ -682,7 +682,7 @@ internal sealed partial class MainForm : Form
         Log($"Selezionato {item}");
     }
 
-    private async Task ConnectAsync()
+    private async Task ConnectAsync(CancellationToken cancellation = default)
     {
         _connect.Enabled = _devices.Enabled = false;
         _mac.ReadOnly = true;
@@ -698,7 +698,8 @@ internal sealed partial class MainForm : Form
             if (_devices.SelectedItem is BluetoothDiscovery.Device chosen &&
                 !string.Equals(chosen.Mac.Replace(":", ""), mac.Replace(":", "").Replace("-", ""), StringComparison.OrdinalIgnoreCase))
                 Log("ATTENZIONE: il MAC digitato è diverso da quello rilevato per il dispositivo selezionato.");
-            await Task.Run(() => candidate.Connect(mac, 1, message => Log("BT: " + message)));
+            await Task.Run(() => candidate.Connect(mac, 1, message => Log("BT: " + message)), cancellation);
+            cancellation.ThrowIfCancellationRequested();
             if (IsDisposed || Disposing) return;
             _client = candidate;
             candidate = null;
@@ -715,12 +716,22 @@ internal sealed partial class MainForm : Form
                 _savedNcus.SelectedItem = saved[0];
                 ApplyProfileLocation(saved[0]);
             }
-            _disconnect.Enabled = _login.Enabled = _send.Enabled = !_installer;
+            _login.Enabled = _send.Enabled = !_installer;
+            _disconnect.Enabled = !_installer || !cancellation.IsCancellationRequested;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
             Log("Socket RFCOMM aperto.");
             _reading = new CancellationTokenSource();
             _ = ReceiveLoopAsync(_client, _reading.Token);
             if (!_installer && _autoLogin.Checked) Login();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                _devices.Enabled = true;
+                _mac.ReadOnly = false;
+            }
+            throw;
         }
         catch (Exception ex)
         {

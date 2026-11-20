@@ -5,6 +5,7 @@ internal sealed partial class MainForm
     private readonly bool _installer;
     private string? _connectedBluetoothName;
     private bool _installerAuthenticated;
+    private bool _installerConnecting;
     private CancellationTokenSource? _installerWork;
     private readonly ComboBox _installerLine = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 54 };
     private readonly NumericUpDown _installerFirst = new() { Minimum = 0, Maximum = 63, Width = 56 };
@@ -65,7 +66,10 @@ internal sealed partial class MainForm
         bool idle = _installerWork is null;
         bool ready = idle && _installerAuthenticated;
         _connect.Enabled = idle && _client is null;
-        _disconnect.Enabled = idle && _client is not null;
+        _disconnect.Enabled = _installerConnecting
+            ? _installerWork?.IsCancellationRequested == false
+            : idle && _client is not null;
+        _disconnect.Text = _installerConnecting ? "Annulla connessione" : "Disconnessione";
         _installerReset.Enabled = _installerDelete.Enabled = _installerStart.Enabled = ready && !_sessionOpen;
         _installerLine.Enabled = _installerFirst.Enabled = _installerUseSecond.Enabled = ready && !_sessionOpen;
         _installerSecond.Enabled = ready && !_sessionOpen && _installerUseSecond.Checked;
@@ -88,9 +92,20 @@ internal sealed partial class MainForm
         string mac = macs[0];
         _status.Text = "Ricerca centralina Test…";
         Log($"Ricerca Bluetooth della centralina Test [{mac}].");
-        var devices = await Task.Run(BluetoothDiscovery.Scan, token);
-        token.ThrowIfCancellationRequested();
-        string? ncuName = devices.Where(device => device.Mac == mac).Select(device => device.Name)
+        BluetoothDiscovery.Device? detected = null;
+        while (detected is null)
+        {
+            var devices = await Task.Run(BluetoothDiscovery.ScanNearby, token);
+            token.ThrowIfCancellationRequested();
+            detected = devices.FirstOrDefault(device => device.Mac == mac);
+            if (detected is null)
+            {
+                Log("Test non ancora rilevata. La ricerca continua.");
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
+            }
+        }
+        Log($"Test rilevata [{detected.Mac}].");
+        string? ncuName = new[] { detected.Name }
             .Concat(testProfiles.Select(profile => profile.BluetoothName))
             .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
             .FirstOrDefault(name => name is { Length: 11 } && name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase));
@@ -99,14 +114,14 @@ internal sealed partial class MainForm
 
         _mac.Text = mac;
         _name.Text = "Test";
-        Log(devices.Any(device => device.Mac == mac) ? "Test rilevata durante la ricerca Bluetooth."
-            : "Test non visibile nella ricerca. Tentativo sul MAC salvato.");
+
         try
         {
-            await ConnectAsync();
+            await ConnectAsync(token);
             token.ThrowIfCancellationRequested();
             if (_client?.Connected != true) return;
             await RequestReplyAsync(SchneiderProtocol.Login(ncuName[3..]), "Login automatico Test", token);
+            token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;
             _status.Text = "Test connessa · login confermato";
             Log("Test connessa. Login 323 confermato dalla centralina.");
@@ -115,9 +130,21 @@ internal sealed partial class MainForm
         {
             if (!_installerAuthenticated && _client is not null) Disconnect();
         }
-    });
+    }, connecting: true);
 
-    private Task DisconnectInstallerAsync() => RunInstallerAsync(async token =>
+    private Task DisconnectInstallerAsync()
+    {
+        if (_installerConnecting && _installerWork is { } work)
+        {
+            work.Cancel();
+            _status.Text = "Annullamento connessione in corso…";
+            UpdateInstallerControls();
+            return Task.CompletedTask;
+        }
+        return RunInstallerAsync(CloseInstallerConnectionAsync);
+    }
+
+    private async Task CloseInstallerConnectionAsync(CancellationToken token)
     {
         try
         {
@@ -129,16 +156,21 @@ internal sealed partial class MainForm
         {
             Disconnect();
         }
-    });
+    }
 
-    private async Task RunInstallerAsync(Func<CancellationToken, Task> operation)
+    private async Task RunInstallerAsync(Func<CancellationToken, Task> operation, bool connecting = false)
     {
         if (_installerWork is not null) return;
         using var work = new CancellationTokenSource();
         _installerWork = work;
+        _installerConnecting = connecting;
         UpdateInstallerControls();
         try { await operation(work.Token); }
-        catch (OperationCanceledException) { Log("Operazione interrotta."); }
+        catch (OperationCanceledException)
+        {
+            Log("Operazione interrotta.");
+            if (_client is null && !IsDisposed && !Disposing) _status.Text = "Disconnesso";
+        }
         catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or ArgumentException)
         {
             Log($"Operazione non completata: {ex.Message}");
@@ -147,6 +179,7 @@ internal sealed partial class MainForm
         finally
         {
             _installerWork = null;
+            _installerConnecting = false;
             if (!IsDisposed && !Disposing) UpdateInstallerControls();
         }
     }
@@ -236,7 +269,8 @@ internal sealed partial class MainForm
             if (!Send(frame))
                 throw new IOException($"Invio del comando {command} fallito.");
             string response;
-            try { response = await reply.Task.WaitAsync(TimeSpan.FromSeconds(5), token); }
+            var timeout = TimeSpan.FromSeconds(_installer && command == "323" ? 15 : 5);
+            try { response = await reply.Task.WaitAsync(timeout, token); }
             catch (TimeoutException) { throw new IOException($"Nessuna risposta al comando {command}."); }
             SchneiderProtocol.TryReadReplyStatus(response, command, out string result);
             if (result != "00") throw new IOException($"Comando {command}: esito {result}.");

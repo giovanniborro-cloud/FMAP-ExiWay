@@ -22,9 +22,15 @@ internal static class BluetoothDiscovery
     private const byte InquiryTimeoutUnits = 8; // Windows uses 1.28-second units.
 
     // Run an active Bluetooth Classic inquiry as well as including cached devices.
-    public static List<Device> Scan()
+    public static List<Device> Scan() => Scan(nearbyOnly: false);
+
+    public static List<Device> ScanNearby() => Scan(nearbyOnly: true);
+
+    private static List<Device> Scan(bool nearbyOnly)
     {
         var devices = new List<Device>();
+        // Allow for the timestamp's granularity when matching this active inquiry.
+        var seenSince = DateTime.UtcNow.AddSeconds(-2);
         var search = new BluetoothDeviceSearchParams
         {
             dwSize = Marshal.SizeOf<BluetoothDeviceSearchParams>(),
@@ -45,7 +51,8 @@ internal static class BluetoothDiscovery
         {
             do
             {
-                if ((info.Address & 0x0000FFFFFFFFFFFFUL) != 0)
+                if ((info.Address & 0x0000FFFFFFFFFFFFUL) != 0 &&
+                    (!nearbyOnly || info.fConnected || SeenSince(info.stLastSeen, seenSince)))
                 {
                     string mac = BluetoothRfcommClient.FormatAddress(info.Address);
                     devices.Add(new Device(info.szName?.Trim() ?? "", mac, info.fAuthenticated, info.fConnected));
@@ -63,6 +70,20 @@ internal static class BluetoothDiscovery
             .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(d => d.Mac, StringComparer.Ordinal)
             .ToList();
+    }
+
+    private static bool SeenSince(SystemTime value, DateTime limit)
+    {
+        if (value.Year == 0) return false;
+        try
+        {
+            return new DateTime(value.Year, value.Month, value.Day, value.Hour, value.Minute, value.Second,
+                value.Milliseconds, DateTimeKind.Utc) >= limit;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]
