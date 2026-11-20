@@ -15,6 +15,12 @@ internal sealed class MainForm : Form
     private readonly CheckBox _autoLogin = new() { Text = "Login automatico", AutoSize = true };
     private readonly ComboBox _lineTarget = new() { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly FlowLayoutPanel _lineCommands = CreateCompactRow();
+    private readonly ComboBox _savedNcus = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 276 };
+    private readonly TextBox _building = new() { Width = 145, MaxLength = 80 };
+    private readonly Button _saveNcu = new() { Text = "Salva NCU connessa", AutoSize = true, Enabled = false };
+    private List<NcuProfile> _profiles = [];
+    private string? _connectedMac;
+    private string? _locationMac;
     private readonly NumericUpDown _exportControllerAddress = new() { Minimum = 1, Maximum = 50, Value = 1, Width = 54 };
     private readonly ComboBox _exportLines = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 87 };
     private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
@@ -100,11 +106,11 @@ internal sealed class MainForm : Form
         _benchCommands.Enabled = false;
         header.Controls.Add(_benchCommands);
 
+        header.Controls.Add(CreateNcuProfilesRow());
+
         var inventory = CreateCompactRow();
         _exportLines.Items.AddRange(["A + B", "Solo A", "Solo B"]);
         _exportLines.SelectedIndex = 0;
-        AddCompactField(inventory, "Indirizzo centralina per Excel", _exportControllerAddress);
-        AddCompactField(inventory, "Linee da leggere", _exportLines);
         inventory.Controls.AddRange([_findAddresses, _lampStatuses]);
         header.Controls.Add(inventory);
 
@@ -151,6 +157,14 @@ internal sealed class MainForm : Form
 
         _scan.Click += async (_, _) => await ScanAsync();
         _devices.SelectedIndexChanged += (_, _) => SelectDevice();
+        _mac.TextChanged += (_, _) =>
+        {
+            if (_locationMac is null || _mac.Text.Equals(_locationMac, StringComparison.OrdinalIgnoreCase)) return;
+            _locationMac = null;
+            _building.Clear();
+            _exportControllerAddress.Value = 1;
+            _exportLines.SelectedIndex = 0;
+        };
         _name.TextChanged += (_, _) =>
         {
             if (_name.Text.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && _name.Text.Length == 11)
@@ -166,6 +180,144 @@ internal sealed class MainForm : Form
         FormClosing += (_, _) => Disconnect();
         Log("Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
+        try
+        {
+            if (File.Exists(NcuProfiles.LocalPath)) SetProfiles(NcuProfiles.Read(NcuProfiles.LocalPath));
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Log($"Rubrica NCU non caricata: {ex.Message}");
+        }
+    }
+
+    private Control CreateNcuProfilesRow()
+    {
+        var row = CreateCompactRow();
+        var load = new Button { Text = "Carica profilo", AutoSize = true };
+        var import = new Button { Text = "Importa JSON", AutoSize = true };
+        var export = new Button { Text = "Esporta JSON", AutoSize = true };
+        AddCompactField(row, "NCU salvate", _savedNcus);
+        row.Controls.Add(load);
+        AddCompactField(row, "Palazzo", _building);
+        AddCompactField(row, "Indirizzo centrale", _exportControllerAddress);
+        AddCompactField(row, "Linee", _exportLines);
+        row.Controls.AddRange([_saveNcu, import, export]);
+        load.Click += (_, _) => LoadNcuProfile();
+        _saveNcu.Click += (_, _) => SaveConnectedNcu();
+        import.Click += (_, _) => ImportNcuProfiles();
+        export.Click += (_, _) => ExportNcuProfiles();
+        return row;
+    }
+
+    private NcuLines SelectedReportLines => _exportLines.SelectedIndex switch
+    {
+        1 => NcuLines.A,
+        2 => NcuLines.B,
+        _ => NcuLines.Both
+    };
+
+    private void SetProfiles(List<NcuProfile> profiles, NcuProfile? selection = null)
+    {
+        _profiles = profiles;
+        _savedNcus.Items.Clear();
+        _savedNcus.Items.AddRange(profiles
+            .OrderBy(profile => profile.Building, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(profile => profile.ControllerAddress)
+            .ThenBy(profile => profile.Mac, StringComparer.Ordinal)
+            .ToArray());
+        _savedNcus.SelectedIndex = selection is null ? (_savedNcus.Items.Count > 0 ? 0 : -1) : _savedNcus.Items.IndexOf(selection);
+    }
+
+    private void LoadNcuProfile()
+    {
+        if (_savedNcus.SelectedItem is not NcuProfile profile) return;
+        if (_addressScan is not null || (_client is null && !_connect.Enabled))
+        {
+            Log("Attendi la fine dell'operazione prima di caricare un profilo NCU.");
+            return;
+        }
+        if (_connectedMac is not null && _connectedMac != profile.Mac)
+        {
+            Log("Disconnetti la NCU attiva prima di caricare un profilo con un MAC diverso.");
+            return;
+        }
+        if (_connectedMac is null)
+        {
+            _devices.SelectedIndex = -1;
+            _password.Clear();
+            _name.Text = profile.Name;
+            _mac.Text = profile.Mac;
+            if (profile.Name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) && profile.Name.Length == 11)
+                _password.Text = profile.Name[3..];
+        }
+        ApplyProfileLocation(profile);
+        Log($"Profilo NCU caricato: {profile} [{profile.Mac}].");
+    }
+
+    private void ApplyProfileLocation(NcuProfile profile)
+    {
+        _locationMac = profile.Mac;
+        _building.Text = profile.Building;
+        _exportControllerAddress.Value = profile.ControllerAddress;
+        _exportLines.SelectedIndex = profile.Lines switch { NcuLines.A => 1, NcuLines.B => 2, _ => 0 };
+    }
+
+    private void SaveConnectedNcu()
+    {
+        if (_client?.Connected != true || _connectedMac is null) return;
+        try
+        {
+            var profile = NcuProfiles.Validate(new NcuProfile(_name.Text, _connectedMac, _building.Text,
+                (int)_exportControllerAddress.Value, SelectedReportLines));
+            var updated = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
+            NcuProfiles.Upsert(updated, profile);
+            NcuProfiles.Save(NcuProfiles.LocalPath, updated);
+            SetProfiles(updated, profile);
+            _locationMac = profile.Mac;
+            Log($"Profilo NCU salvato: {profile} [{profile.Mac}].");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Log($"Profilo NCU non salvato: {ex.Message}");
+        }
+    }
+
+    private void ImportNcuProfiles()
+    {
+        using var open = new OpenFileDialog { Title = "Importa rubrica NCU", Filter = "Rubrica NCU (*.json)|*.json" };
+        if (open.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            var imported = NcuProfiles.Read(open.FileName);
+            var updated = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
+            foreach (var profile in imported) NcuProfiles.Upsert(updated, profile);
+            NcuProfiles.Save(NcuProfiles.LocalPath, updated);
+            SetProfiles(updated);
+            Log($"Rubrica NCU importata: {imported.Count} profili sincronizzati.");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Log($"Importazione rubrica NCU non riuscita: {ex.Message}");
+        }
+    }
+
+    private void ExportNcuProfiles()
+    {
+        using var save = new SaveFileDialog
+        {
+            Title = "Esporta rubrica NCU", Filter = "Rubrica NCU (*.json)|*.json",
+            DefaultExt = "json", AddExtension = true, FileName = "centrali-ncu.json"
+        };
+        if (save.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            NcuProfiles.Save(save.FileName, _profiles);
+            Log($"Rubrica NCU esportata: {save.FileName}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log($"Esportazione rubrica NCU non riuscita: {ex.Message}");
+        }
     }
 
     private Control CreateBenchCommands()
@@ -424,7 +576,9 @@ internal sealed class MainForm : Form
             if (IsDisposed || Disposing) return;
             _devices.Items.Clear();
             _devices.Items.AddRange(list.ToArray());
-            _devices.SelectedIndex = list.FindIndex(device => device.IsNcu);
+            _devices.SelectedIndex = _connect.Enabled
+                ? list.FindIndex(device => device.IsNcu)
+                : list.FindIndex(device => device.Mac == _connectedMac);
             foreach (var device in list)
                 Log($"Bluetooth rilevato: {device} / connesso={device.Connected}");
             Log($"Trovati {list.Count} dispositivi Bluetooth Classic, di cui {list.Count(device => !device.Paired)} non associati.");
@@ -438,7 +592,7 @@ internal sealed class MainForm : Form
 
     private void SelectDevice()
     {
-        if (_devices.SelectedItem is not BluetoothDiscovery.Device item) return;
+        if (!_connect.Enabled || _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
         if (!item.IsNcu) _password.Clear();
         _name.Text = item.Name;
         _mac.Text = item.Mac;
@@ -447,7 +601,8 @@ internal sealed class MainForm : Form
 
     private async Task ConnectAsync()
     {
-        _connect.Enabled = false;
+        _connect.Enabled = _devices.Enabled = false;
+        _mac.ReadOnly = true;
         _status.Text = "Connessione RFCOMM 1...";
         Log("Apertura socket AF_BTH/RFCOMM canale 1. Il pairing Windows potrebbe comunque essere richiesto.");
         BluetoothRfcommClient? candidate = new();
@@ -464,6 +619,15 @@ internal sealed class MainForm : Form
             if (IsDisposed || Disposing) return;
             _client = candidate;
             candidate = null;
+            _connectedMac = BluetoothRfcommClient.FormatAddress(address);
+            _locationMac = _connectedMac;
+            _saveNcu.Enabled = true;
+            var saved = _profiles.Where(profile => profile.Mac == _connectedMac).Take(2).ToList();
+            if (saved.Count == 1 && string.IsNullOrWhiteSpace(_building.Text))
+            {
+                _savedNcus.SelectedItem = saved[0];
+                ApplyProfileLocation(saved[0]);
+            }
             _disconnect.Enabled = _login.Enabled = _send.Enabled = true;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
             Log("Socket RFCOMM aperto.");
@@ -481,7 +645,8 @@ internal sealed class MainForm : Form
             else
                 Log("La connessione RFCOMM può richiedere pairing Bluetooth; questo errore va distinto dall'autenticazione Schneider 323.");
             _status.Text = "Connessione fallita";
-            _connect.Enabled = true;
+            _connect.Enabled = _devices.Enabled = true;
+            _mac.ReadOnly = false;
         }
         finally { candidate?.Dispose(); }
     }
@@ -498,6 +663,8 @@ internal sealed class MainForm : Form
         if (client is null || !client.Connected) return;
 
         int controllerAddress = (int)_exportControllerAddress.Value;
+        string building = _building.Text;
+        var reportLines = SelectedReportLines;
         int firstLine = _exportLines.SelectedIndex == 2 ? 1 : 0;
         int lastLine = _exportLines.SelectedIndex == 1 ? 0 : 1;
         if (AddressWorkbook.BusNumber(controllerAddress, lastLine) > 99)
@@ -516,7 +683,7 @@ internal sealed class MainForm : Form
         string originalLabel = activeButton.Text;
         activeButton.Text = "Annulla ricerca";
         (includeLampStatus ? _findAddresses : _lampStatuses).Enabled = false;
-        _exportControllerAddress.Enabled = _exportLines.Enabled = false;
+        _building.Enabled = _exportControllerAddress.Enabled = _exportLines.Enabled = _saveNcu.Enabled = false;
         string reportTitle = includeLampStatus ? "Stato lampade" : "Indirizzi";
         _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _scan.Enabled = false;
         var addresses = new List<LampAddressStatus>();
@@ -552,7 +719,7 @@ internal sealed class MainForm : Form
             {
                 Title = $"Esporta in Excel · {reportTitle}", Filter = "Cartella di lavoro Excel (*.xlsx)|*.xlsx",
                 DefaultExt = "xlsx", AddExtension = true, InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                FileName = $"{reportTitle.Replace(' ', '-')}-Exiway-C{controllerAddress:00}-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"
+                FileName = NcuProfiles.ExcelName(reportTitle, building, controllerAddress, reportLines, DateTime.Now)
             };
             if (save.ShowDialog(this) == DialogResult.OK)
             {
@@ -576,11 +743,12 @@ internal sealed class MainForm : Form
             if (!IsDisposed && !Disposing)
             {
                 activeButton.Text = originalLabel;
-                _exportControllerAddress.Enabled = _exportLines.Enabled = true;
+                _building.Enabled = _exportControllerAddress.Enabled = _exportLines.Enabled = true;
                 _scan.Enabled = true;
                 if (ReferenceEquals(_client, client) && client.Connected)
                 {
                     _lineCommands.Enabled = _benchCommands.Enabled = _send.Enabled = _login.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
+                    _saveNcu.Enabled = true;
                     _status.Text = "Autenticazione 323: ACK ricevuto";
                 }
             }
@@ -672,6 +840,10 @@ internal sealed class MainForm : Form
         _addressScan?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
+        _connectedMac = null;
+        _mac.ReadOnly = false;
+        _devices.Enabled = true;
+        _saveNcu.Enabled = false;
         _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = false;
         _connect.Enabled = true;
         _disconnect.Enabled = _login.Enabled = _send.Enabled = false;
