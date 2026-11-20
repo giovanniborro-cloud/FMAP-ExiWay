@@ -83,11 +83,11 @@ internal sealed partial class MainForm
     private Task ConnectInstallerAsync() => RunInstallerAsync(async token =>
     {
         if (_client is not null) return;
-        var testProfiles = _profiles.Where(profile => profile.Name.Equals("Test", StringComparison.OrdinalIgnoreCase)).ToList();
+        var testProfiles = _profiles.Where(profile => profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase)).ToList();
         var macs = testProfiles.Select(profile => profile.Mac).Distinct(StringComparer.Ordinal).ToList();
         if (macs.Count != 1)
-            throw new IOException(macs.Count == 0 ? "Nessun profilo NCU salvato con il nome Test."
-                : "Sono presenti profili Test con MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
+            throw new IOException(macs.Count == 0 ? "Nessun profilo NCU salvato con Palazzo = TEST."
+                : "Sono presenti profili con Palazzo = TEST e MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
 
         string mac = macs[0];
         _status.Text = "Ricerca centralina Test…";
@@ -113,7 +113,7 @@ internal sealed partial class MainForm
             throw new IOException("Nome Bluetooth NCU di Test non disponibile. Verifica che Test sia rilevabile o salvala di nuovo come Esperto.");
 
         _mac.Text = mac;
-        _name.Text = "Test";
+        _name.Text = testProfiles[0].Name;
 
         try
         {

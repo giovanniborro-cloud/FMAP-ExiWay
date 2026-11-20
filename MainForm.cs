@@ -194,7 +194,7 @@ internal sealed partial class MainForm : Form
         _showLampMap.Click += async (_, _) => await ToggleInventoryAsync(includeLampStatus: false, showMap: true);
         FormClosing += (_, _) => Disconnect();
         Disposed += (_, _) => _lightTips.Dispose();
-        Log(installer ? "Tecnico Installatore · è disponibile solo la NCU salvata come Test."
+        Log(installer ? "Tecnico Installatore · è disponibile solo la NCU salvata con Palazzo = TEST."
             : "Pronto. Cerca un controller NCU oppure inserisci il MAC Bluetooth.");
         Log($"File di sessione: {_logPath}");
         try
