@@ -25,6 +25,9 @@ internal sealed class MainForm : Form
     private readonly ComboBox _exportLines = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 87 };
     private readonly Button _findAddresses = new() { Text = "Trova indirizzi → Excel", AutoSize = true, Enabled = false };
     private readonly Button _lampStatuses = new() { Text = "Stato lampade → Excel", AutoSize = true, Enabled = false };
+    private CancellationTokenSource? _clearLine;
+    private TaskCompletionSource<string>? _clearReply;
+    private string? _expectedClearCommand;
     private CancellationTokenSource? _addressScan;
     private TaskCompletionSource<LampAddressStatus>? _addressReply;
     private int _requestedAddress;
@@ -231,7 +234,7 @@ internal sealed class MainForm : Form
     private void LoadNcuProfile()
     {
         if (_savedNcus.SelectedItem is not NcuProfile profile) return;
-        if (_addressScan is not null || (_client is null && !_connect.Enabled))
+        if (_addressScan is not null || _clearLine is not null || (_client is null && !_connect.Enabled))
         {
             Log("Attendi la fine dell'operazione prima di caricare un profilo NCU.");
             return;
@@ -344,7 +347,7 @@ internal sealed class MainForm : Form
         string Clear(int step) => SchneiderProtocol.ClearLampStep(Line(), Number(), step);
 
         const string setSafeTime = "Imposta finestra test consentita (302)";
-        (string Label, Func<string> Format, bool UsesNumber)[][] groups =
+        (string Label, Func<string>? Format, bool UsesNumber)[][] groups =
         [
             [
                 ("Avvia sessione (133 / 001)", () => Address(1), true),
@@ -353,13 +356,10 @@ internal sealed class MainForm : Form
                 ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()), true)
             ],
             [
-                ("Linea 1 · Prepara (130)", () => SchneiderProtocol.ClearLineStep(Line(), 1), false),
-                ("Linea 2 · Cancella tutti gli indirizzi (130)", () => SchneiderProtocol.ClearLineStep(Line(), 2), false),
-                ("Linea 3 · Aggiorna elenco centralina (045)", () => SchneiderProtocol.ClearLineStep(Line(), 3), false),
+                ("Cancella tutti gli indirizzi della linea", null, false),
                 ("Singola 1 · Prepara cancellazione (130)", () => Clear(1), false),
                 ("Singola 2 · Cancella numero lampada (130)", () => Clear(2), true),
-                ("Singola 3 · Interroga lampada (130)", () => Clear(3), true),
-                ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()), true)
+                ("Singola 3 · Interroga lampada (130)", () => Clear(3), true)
             ],
             [
                 ("Accendi lampada al massimo (017)", () => Lamp(5), true),
@@ -398,7 +398,9 @@ internal sealed class MainForm : Form
             InvalidateCommand();
             bool usesNumber = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].UsesNumber;
             number.Enabled = usesNumber;
-            send.Text = usesNumber ? $"Invia a {line.Text}{Number():00}" : "Invia comando";
+            bool clearsLine = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].Format is null;
+            send.Text = clearsLine ? $"Cancella tutta la linea {line.Text}"
+                : usesNumber ? $"Invia a {line.Text}{Number():00}" : "Invia comando";
         }
 
         line.SelectedIndexChanged += (_, _) => UpdateSelection();
@@ -407,9 +409,14 @@ internal sealed class MainForm : Form
         fromHour.ValueChanged += (_, _) => InvalidateCommand();
         toHour.ValueChanged += (_, _) => InvalidateCommand();
 
-        send.Click += (_, _) =>
+        send.Click += async (_, _) =>
         {
             var selected = groups[function.SelectedIndex][operation.SelectedIndex];
+            if (selected.Format is null)
+            {
+                await ClearLineAsync(Line());
+                return;
+            }
             loadedCommand = selected.Format();
             string target = selected.UsesNumber ? $"lampada {line.Text}{Number():00}" : $"selezione linea {line.Text}";
             SendSelected(loadedCommand, $"{selected.Label} · {target}");
@@ -663,6 +670,72 @@ internal sealed class MainForm : Form
         finally { candidate?.Dispose(); }
     }
 
+    private async Task ClearLineAsync(int line)
+    {
+        var client = _client;
+        if (client?.Connected != true || _clearLine is not null || _addressScan is not null) return;
+
+        char lineName = (char)('A' + line);
+        if (MessageBox.Show(this, $"Cancellare tutti gli indirizzi della linea {lineName}?",
+            "Cancellazione indirizzi", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return;
+        if (!ReferenceEquals(_client, client) || !client.Connected) return;
+
+        using var clear = new CancellationTokenSource();
+        _clearLine = clear;
+        _benchCommands.Enabled = _lineCommands.Enabled = _login.Enabled = _send.Enabled =
+            _findAddresses.Enabled = _lampStatuses.Enabled = false;
+        try
+        {
+            for (int step = 1; step <= 3; step++)
+            {
+                clear.Token.ThrowIfCancellationRequested();
+                string frame = SchneiderProtocol.ClearLineStep(line, step);
+                string command = frame.Substring(4, 3);
+                var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _expectedClearCommand = command;
+                _clearReply = reply;
+                _status.Text = $"Cancellazione linea {lineName} · passaggio {step}/3";
+                if (!SendSelected(frame, $"Clear linea {lineName} · passaggio {step}/3"))
+                    throw new IOException($"Invio del comando {command} fallito.");
+
+                string result;
+                try
+                {
+                    result = await reply.Task.WaitAsync(TimeSpan.FromSeconds(5), clear.Token);
+                }
+                catch (TimeoutException)
+                {
+                    throw new IOException($"Nessun esito per il comando {command}, passaggio {step}.");
+                }
+                if (result != "00")
+                    throw new IOException($"Comando {command}, passaggio {step}: esito {result}.");
+            }
+            Log($"Clear linea {lineName}: tutti e tre i passaggi accettati.");
+        }
+        catch (OperationCanceledException)
+        {
+            Log($"Clear linea {lineName} interrotto.");
+        }
+        catch (IOException ex)
+        {
+            Log($"Clear linea {lineName} non completato: {ex.Message}");
+        }
+        finally
+        {
+            _clearReply = null;
+            _expectedClearCommand = null;
+            _clearLine = null;
+            if (!IsDisposed && !Disposing && ReferenceEquals(_client, client) && client.Connected)
+            {
+                _benchCommands.Enabled = _lineCommands.Enabled = _login.Enabled = _send.Enabled =
+                    _findAddresses.Enabled = _lampStatuses.Enabled = true;
+                _status.Text = "Autenticazione 323: ACK ricevuto";
+            }
+        }
+    }
+
     private async Task ToggleInventoryAsync(bool includeLampStatus)
     {
         if (_addressScan is { } activeScan) activeScan.Cancel();
@@ -802,7 +875,11 @@ internal sealed class MainForm : Form
                         if (_addressReply is { } reply && SchneiderProtocol.TryReadLampStatus(frame, out var lamp) &&
                             lamp.Index == _requestedAddress)
                             reply.TrySetResult(lamp);
-                        if (frame == "$0013230000*" && ReferenceEquals(_client, client) && _addressScan is null)
+                        if (_clearReply is { } clearReply && _expectedClearCommand is { } expected &&
+                            SchneiderProtocol.TryReadReplyStatus(frame, expected, out string result))
+                            clearReply.TrySetResult(result);
+                        if (frame == "$0013230000*" && ReferenceEquals(_client, client) &&
+                            _addressScan is null && _clearLine is null)
                         {
                             _lineCommands.Enabled = _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
@@ -850,6 +927,7 @@ internal sealed class MainForm : Form
     private void Disconnect()
     {
         _addressScan?.Cancel();
+        _clearLine?.Cancel();
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
         _connectedMac = null;

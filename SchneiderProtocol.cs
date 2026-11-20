@@ -110,6 +110,17 @@ internal static class SchneiderProtocol
         return 12 + int.Parse(length, System.Globalization.CultureInfo.InvariantCulture) + 3;
     }
 
+    public static bool TryReadReplyStatus(string frame, string command, out string status)
+    {
+        status = "";
+        if (frame.Length < 12 || frame[0] != '$' || !frame.EndsWith("00*", StringComparison.Ordinal) ||
+            !frame.AsSpan(4, 3).SequenceEqual(command))
+            return false;
+
+        status = frame.Substring(7, 2);
+        return true;
+    }
+
     public static string DescribeReply(string frame)
     {
         if (frame.Length < 12 || frame[0] != '$' || !frame.EndsWith("00*", StringComparison.Ordinal))
