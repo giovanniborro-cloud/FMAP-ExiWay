@@ -635,9 +635,9 @@ internal sealed partial class MainForm : Form
     private async Task<bool> LoginAsync(CancellationToken token = default)
     {
         var client = _client;
-        if (client?.Connected != true)
+        if (client?.Connected != true || _reading is null)
         {
-            Log("Nessuna connessione aperta.");
+            Log("Connessione RFCOMM non pronta per il login.");
             return false;
         }
 
@@ -660,7 +660,7 @@ internal sealed partial class MainForm : Form
                 await Task.Delay(remaining, token);
             }
             token.ThrowIfCancellationRequested();
-            if (!ReferenceEquals(_client, client) || !client.Connected || IsDisposed || Disposing)
+            if (!ReferenceEquals(_client, client) || !client.Connected || _reading is null || IsDisposed || Disposing)
                 return false;
             return Send(SchneiderProtocol.Login(password));
         }
@@ -730,7 +730,7 @@ internal sealed partial class MainForm : Form
         Log($"Selezionato {item}");
     }
 
-    private async Task ConnectAsync(CancellationToken cancellation = default)
+    private async Task<bool> ConnectAsync(CancellationToken cancellation = default)
     {
         _connect.Enabled = _devices.Enabled = false;
         _mac.ReadOnly = true;
@@ -748,35 +748,42 @@ internal sealed partial class MainForm : Form
                 Log("ATTENZIONE: il MAC digitato è diverso da quello rilevato per il dispositivo selezionato.");
             await Task.Run(() => candidate.Connect(mac, 1, message => Log("BT: " + message)), cancellation);
             cancellation.ThrowIfCancellationRequested();
-            if (IsDisposed || Disposing) return;
+            if (IsDisposed || Disposing) return false;
+
+            string connectedMac = BluetoothRfcommClient.FormatAddress(address);
+            if (!_installer)
+            {
+                _connectedBluetoothName = _devices.SelectedItem is BluetoothDiscovery.Device device &&
+                    device.Mac == connectedMac && device.Name.Length > 0 ? device.Name
+                    : _profiles.FirstOrDefault(profile => profile.Mac == connectedMac &&
+                        !string.IsNullOrWhiteSpace(profile.BluetoothName))?.BluetoothName ?? _name.Text;
+                var saved = _profiles.Where(profile => profile.Mac == connectedMac).Take(2).ToList();
+                if (saved.Count == 1 && string.IsNullOrWhiteSpace(_building.Text))
+                {
+                    _savedNcus.SelectedItem = saved[0];
+                    ApplyProfileLocation(saved[0]);
+                }
+                _saveNcu.Enabled = true;
+            }
+
+            _reading = new CancellationTokenSource();
             _client = candidate;
             _connectedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             candidate = null;
-            _connectedMac = BluetoothRfcommClient.FormatAddress(address);
-            _connectedBluetoothName = _devices.SelectedItem is BluetoothDiscovery.Device device &&
-                device.Mac == _connectedMac && device.Name.Length > 0 ? device.Name
-                : _profiles.FirstOrDefault(profile => profile.Mac == _connectedMac &&
-                    !string.IsNullOrWhiteSpace(profile.BluetoothName))?.BluetoothName ?? _name.Text;
-            _locationMac = _connectedMac;
-            _saveNcu.Enabled = true;
-            var saved = _profiles.Where(profile => profile.Mac == _connectedMac).Take(2).ToList();
-            if (saved.Count == 1 && string.IsNullOrWhiteSpace(_building.Text))
-            {
-                _savedNcus.SelectedItem = saved[0];
-                ApplyProfileLocation(saved[0]);
-            }
+            _connectedMac = _locationMac = connectedMac;
+            _ = ReceiveLoopAsync(_client, _reading.Token);
             _login.Enabled = _send.Enabled = !_installer;
             _disconnect.Enabled = !_installer || !cancellation.IsCancellationRequested;
             _status.Text = "Bluetooth connesso — login non ancora verificato";
-            Log("Socket RFCOMM aperto.");
-            _reading = new CancellationTokenSource();
-            _ = ReceiveLoopAsync(_client, _reading.Token);
+            Log("Socket RFCOMM aperto. Ricezione avviata.");
             if (!_installer && _autoLogin.Checked) await LoginAsync(cancellation);
+            return true;
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
             if (!IsDisposed && !Disposing)
             {
+                if (_client is not null) Disconnect();
                 _devices.Enabled = true;
                 _mac.ReadOnly = false;
             }
@@ -784,16 +791,20 @@ internal sealed partial class MainForm : Form
         }
         catch (Exception ex)
         {
-            Log($"ERRORE connessione: {ex.Message} (Win32 {((ex as System.ComponentModel.Win32Exception)?.NativeErrorCode.ToString() ?? "n/d")})");
-            if (ex is System.ComponentModel.Win32Exception { NativeErrorCode: 10049 })
-                Log("DIAGNOSI: controllare i due tentativi (canale diretto e SDP). Il pairing Windows e la pubblicazione SDP del servizio sono verifiche successive.");
-            else if (ex is System.ComponentModel.Win32Exception { NativeErrorCode: 10013 })
-                Log("DIAGNOSI 10013: autenticazione/associazione Bluetooth rifiutata da Windows.");
-            else
-                Log("La connessione RFCOMM può richiedere pairing Bluetooth; questo errore va distinto dall'autenticazione Schneider 323.");
+            if (_client is not null) Disconnect();
+            if (ex is System.ComponentModel.Win32Exception native)
+            {
+                Log($"ERRORE connessione RFCOMM: {native.Message} (Win32 {native.NativeErrorCode}).");
+                if (native.NativeErrorCode == 10049)
+                    Log("DIAGNOSI: controlla i tentativi su canale diretto e SDP.");
+                else if (native.NativeErrorCode == 10013)
+                    Log("DIAGNOSI 10013: autenticazione/associazione Bluetooth rifiutata da Windows.");
+            }
+            else Log($"ERRORE preparazione connessione: {ex.Message}");
             _status.Text = "Connessione fallita";
             _connect.Enabled = _devices.Enabled = true;
             _mac.ReadOnly = false;
+            return false;
         }
         finally { candidate?.Dispose(); }
     }

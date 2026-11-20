@@ -178,9 +178,8 @@ internal sealed partial class MainForm
         try
         {
             Log("Connetti RFCOMM 1.");
-            await ConnectAsync(token);
+            if (!await ConnectAsync(token)) return;
             token.ThrowIfCancellationRequested();
-            if (_client?.Connected != true) return;
 
             await WaitForReplyAsync("323", () => LoginAsync(token), token);
             token.ThrowIfCancellationRequested();
