@@ -93,59 +93,27 @@ internal sealed partial class MainForm
                 : "Sono presenti profili con Palazzo = TEST e MAC diversi. Scegli un unico MAC nella rubrica in modalità Esperto.");
 
         string mac = macs[0];
+        _status.Text = "Cerca NCU…";
+        Log($"Cerca NCU · MAC del profilo con Palazzo TEST: {mac}.");
+        var devices = await ScanControllersAsync(token);
+        int index = devices.FindIndex(device => string.Equals(device.Mac, mac, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            throw new IOException($"Cerca NCU non ha rilevato il MAC di Test ({mac}).");
+
+        _devices.Items.Clear();
+        _devices.Items.AddRange(devices.ToArray());
+        _devices.SelectedIndex = index;
+        SetConnectionDevice(devices[index]);
+
         try
         {
-            string? defaultPassword = null;
-            while (_client?.Connected != true)
-            {
-                _status.Text = "Ricerca centralina Test…";
-                Log($"Cerca NCU · MAC richiesto dal profilo con Palazzo TEST: {mac}.");
-                var devices = await ScanControllersAsync(token);
-                token.ThrowIfCancellationRequested();
-                var detected = devices.FirstOrDefault(device =>
-                    string.Equals(device.Mac, mac, StringComparison.OrdinalIgnoreCase));
-                if (detected is not null)
-                {
-                    SetConnectionDevice(detected);
-                    defaultPassword = string.IsNullOrEmpty(_password.Text)
-                        ? testProfiles.Select(profile => profile.BluetoothName)
-                            .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
-                            .Select(SchneiderProtocol.DefaultPassword)
-                            .FirstOrDefault(password => password is not null)
-                        : _password.Text;
-                    Log($"Connetti RFCOMM 1 · MAC di Test confermato: {detected.Mac}.");
-                    await ConnectAsync(token);
-                    token.ThrowIfCancellationRequested();
-                    if (_client?.Connected == true) break;
-                    UpdateInstallerControls();
-                    Log("Test non ha aperto la connessione RFCOMM. La ricerca continua.");
-                }
-                else Log("MAC di Test non presente nei risultati. La ricerca continua.");
-                await Task.Delay(TimeSpan.FromSeconds(2), token);
-            }
+            Log("Connetti RFCOMM 1.");
+            await ConnectAsync(token);
+            token.ThrowIfCancellationRequested();
+            if (_client?.Connected != true) return;
 
-            string? loginFrame = null;
-            try
-            {
-                loginFrame = NcuLoginStore.Read(mac);
-                if (loginFrame is not null && !SchneiderProtocol.IsLoginRequest(loginFrame))
-                    loginFrame = null;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
-            {
-                Log("Login protetto non disponibile per questo utente Windows.");
-            }
-
-            if (loginFrame is null)
-            {
-                if (defaultPassword is null)
-                    throw new IOException("Password non ricavabile dal nome NCU. Esegui un login riuscito su Test in modalità Esperto.");
-                loginFrame = SchneiderProtocol.Login(defaultPassword);
-                Log("Uso la password predefinita ricavata dal nome Bluetooth NCU.");
-            }
-            else Log("Uso il login già confermato in modalità Esperto.");
-
-            await RequestReplyAsync(loginFrame, "Login 323 · connessione RFCOMM 1 aperta", token);
+            Log("Login 323.");
+            await WaitForReplyAsync("323", Login, token);
             token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;
             _status.Text = "Test connessa · login confermato";
@@ -300,18 +268,23 @@ internal sealed partial class MainForm
         _sessionOpen = false;
     }
 
-    private async Task<string> RequestReplyAsync(string frame, string operation, CancellationToken token)
+    private Task<string> RequestReplyAsync(string frame, string operation, CancellationToken token) =>
+        WaitForReplyAsync(frame.Substring(4, 3), () =>
+        {
+            Log(operation);
+            _command.Text = frame;
+            return Send(frame);
+        }, token);
+
+    private async Task<string> WaitForReplyAsync(string command, Func<bool> transmit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        string command = frame.Substring(4, 3);
         var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         _expectedCommand = command;
         _commandReply = reply;
         try
         {
-            Log(operation);
-            if (command != "323") _command.Text = frame;
-            if (!Send(frame))
+            if (!transmit())
                 throw new IOException($"Invio del comando {command} fallito.");
             string response;
             var timeout = TimeSpan.FromSeconds(_installer && command == "323" ? 15 : 5);

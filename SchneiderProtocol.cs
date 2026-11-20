@@ -15,10 +15,6 @@ internal static class SchneiderProtocol
     public static string? DefaultPassword(string? name) =>
         name is { Length: 11 } && name.StartsWith("NCU", StringComparison.OrdinalIgnoreCase) ? name[3..] : null;
 
-    public static bool IsLoginRequest(string frame) =>
-        frame.Length == 28 && frame.StartsWith("$001323015", StringComparison.Ordinal) &&
-        frame.EndsWith("00*", StringComparison.Ordinal);
-
     public static string Login(string password)
     {
         if (password.Length > 15 || password.Any(c => c > 0x7F))

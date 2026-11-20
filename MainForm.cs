@@ -44,8 +44,6 @@ internal sealed partial class MainForm : Form
     private Control _benchCommands = new Panel();
     private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
-    private string? _pendingExpertLogin;
-    private string? _acceptedExpertLogin;
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
 
@@ -317,7 +315,6 @@ internal sealed partial class MainForm : Form
             NcuProfiles.Save(NcuProfiles.LocalPath, updated);
             SetProfiles(updated, profile);
             _locationMac = profile.Mac;
-            if (_acceptedExpertLogin is { } accepted) SaveVerifiedLogin(profile.Mac, accepted);
             Log($"Profilo NCU salvato: {profile} [{profile.Mac}].");
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -624,34 +621,22 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void Login()
+    private bool Login()
     {
         if (string.IsNullOrWhiteSpace(_password.Text))
         {
             Log("Inserisci la password della centralina per il login 323.");
-            return;
+            return false;
         }
 
         try
         {
-            Send(SchneiderProtocol.Login(_password.Text));
+            return Send(SchneiderProtocol.Login(_password.Text));
         }
         catch (ArgumentException ex)
         {
             Log($"Login non inviato: {ex.Message}");
-        }
-    }
-
-    private void SaveVerifiedLogin(string mac, string frame)
-    {
-        try
-        {
-            NcuLoginStore.Save(mac, frame);
-            Log("Login 323 verificato e salvato nella configurazione protetta di Windows.");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
-        {
-            Log("Impossibile salvare il login 323 nella configurazione protetta di Windows.");
+            return false;
         }
     }
 
@@ -1007,14 +992,6 @@ internal sealed partial class MainForm : Form
                         if (!_installer && frame == "$0013230000*" && ReferenceEquals(_client, client) &&
                             _addressScan is null && _clearLine is null)
                         {
-                            if (_pendingExpertLogin is { } accepted)
-                            {
-                                _acceptedExpertLogin = accepted;
-                                _pendingExpertLogin = null;
-                                if (_connectedMac is { } mac && _profiles.Any(profile => profile.Mac == mac &&
-                                    profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase)))
-                                    SaveVerifiedLogin(mac, accepted);
-                            }
                             _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = true;
                             _status.Text = "Autenticazione 323: ACK ricevuto";
                         }
@@ -1045,8 +1022,6 @@ internal sealed partial class MainForm : Form
             Log("TX  " + (isLogin ? "[LOGIN 323 — password oscurata]" : SchneiderProtocol.FormatReplyForLog(frame)), telegram: true);
             if (isLogin)
             {
-                if (!_installer)
-                    _pendingExpertLogin = SchneiderProtocol.IsLoginRequest(frame) ? frame : null;
                 _benchCommands.Enabled = _findAddresses.Enabled = _lampStatuses.Enabled = _showLampMap.Enabled = false;
                 _status.Text = "Login inviato — attesa ACK";
                 Log("Login 323 inviato.");
@@ -1071,7 +1046,6 @@ internal sealed partial class MainForm : Form
         _reading?.Cancel(); _reading?.Dispose(); _reading = null;
         _client?.Dispose(); _client = null;
         _connectedMac = null;
-        _pendingExpertLogin = _acceptedExpertLogin = null;
         _mac.ReadOnly = false;
         _devices.Enabled = true;
         _saveNcu.Enabled = false;
