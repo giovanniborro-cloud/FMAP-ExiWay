@@ -326,7 +326,10 @@ internal sealed class MainForm : Form
         var line = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 48 };
         line.Items.AddRange(["A", "B"]);
         line.SelectedIndex = 0;
-        var number = new NumericUpDown { Minimum = 0, Maximum = 63, Width = 62 };
+        var number = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 62 };
+        number.Items.AddRange(Enumerable.Range(0, 64)
+            .Select(value => value.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+        number.SelectedIndex = 0;
         var function = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 144 };
         function.Items.AddRange(["Indirizzamento", "Cancellazione", "Accensione e luce", "Diagnostica e test"]);
         var operation = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 252, DropDownWidth = 330 };
@@ -335,48 +338,48 @@ internal sealed class MainForm : Form
         var send = new Button { Text = "Invia comando", AutoSize = true };
 
         int Line() => line.SelectedIndex;
-        int Number() => (int)number.Value;
+        int Number() => number.SelectedIndex;
         string Lamp(int action) => SchneiderProtocol.LampCommand(Line(), Number(), action);
         string Address(int action) => SchneiderProtocol.SequentialAddress(Line(), action, action == 3 ? 0 : Number());
         string Clear(int step) => SchneiderProtocol.ClearLampStep(Line(), Number(), step);
 
         const string setSafeTime = "Imposta finestra test consentita (302)";
-        (string Label, Func<string> Format)[][] groups =
+        (string Label, Func<string> Format, bool UsesNumber)[][] groups =
         [
             [
-                ("Avvia sessione (133 / 001)", () => Address(1)),
-                ("Proponi numero per una lampada (133 / 002)", () => Address(2)),
-                ("Termina sessione (133 / 003)", () => Address(3)),
-                ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()))
+                ("Avvia sessione (133 / 001)", () => Address(1), true),
+                ("Proponi numero per una lampada (133 / 002)", () => Address(2), true),
+                ("Termina sessione (133 / 003)", () => Address(3), false),
+                ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()), true)
             ],
             [
-                ("Linea 1 · Prepara (130)", () => SchneiderProtocol.ClearLineStep(Line(), 1)),
-                ("Linea 2 · Cancella tutti gli indirizzi (130)", () => SchneiderProtocol.ClearLineStep(Line(), 2)),
-                ("Linea 3 · Aggiorna elenco centralina (045)", () => SchneiderProtocol.ClearLineStep(Line(), 3)),
-                ("Singola 1 · Prepara cancellazione (130)", () => Clear(1)),
-                ("Singola 2 · Cancella numero lampada (130)", () => Clear(2)),
-                ("Singola 3 · Interroga lampada (130)", () => Clear(3)),
-                ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()))
+                ("Linea 1 · Prepara (130)", () => SchneiderProtocol.ClearLineStep(Line(), 1), false),
+                ("Linea 2 · Cancella tutti gli indirizzi (130)", () => SchneiderProtocol.ClearLineStep(Line(), 2), false),
+                ("Linea 3 · Aggiorna elenco centralina (045)", () => SchneiderProtocol.ClearLineStep(Line(), 3), false),
+                ("Singola 1 · Prepara cancellazione (130)", () => Clear(1), false),
+                ("Singola 2 · Cancella numero lampada (130)", () => Clear(2), true),
+                ("Singola 3 · Interroga lampada (130)", () => Clear(3), true),
+                ("Leggi numero e stato lampada (201)", () => SchneiderProtocol.ReadLamp(Line(), Number()), true)
             ],
             [
-                ("Accendi lampada al massimo (017)", () => Lamp(5)),
-                ("Spegni lampada (017)", () => Lamp(0)),
-                ("Identifica lampada una volta (017)", () => Lamp(240)),
-                ("Accendi tutta la linea al massimo (017)", () => SchneiderProtocol.LineCommand(Line(), 5)),
-                ("Spegni tutta la linea (017)", () => SchneiderProtocol.LineCommand(Line(), 0)),
-                ("Identifica tutta la linea una volta (017)", () => SchneiderProtocol.LineCommand(Line(), 240))
+                ("Accendi lampada al massimo (017)", () => Lamp(5), true),
+                ("Spegni lampada (017)", () => Lamp(0), true),
+                ("Identifica lampada una volta (017)", () => Lamp(240), true),
+                ("Accendi tutta la linea al massimo (017)", () => SchneiderProtocol.LineCommand(Line(), 5), false),
+                ("Spegni tutta la linea (017)", () => SchneiderProtocol.LineCommand(Line(), 0), false),
+                ("Identifica tutta la linea una volta (017)", () => SchneiderProtocol.LineCommand(Line(), 240), false)
             ],
             [
-                ("Avvia test funzionale (017)", () => Lamp(227)),
-                ("Avvia test autonomia (017)", () => Lamp(228)),
-                ("Interrompi test (017)", () => Lamp(229)),
-                ("Rest (017)", () => Lamp(224)),
-                ("Inhibit (017)", () => Lamp(225)),
-                ("Re-Light (017)", () => Lamp(226)),
-                ("Leggi informazioni centralina (208)", () => SchneiderProtocol.Command(208)),
-                ("Leggi orologio centralina (008)", () => SchneiderProtocol.Command(8)),
-                ("Leggi finestra test consentita (205)", () => SchneiderProtocol.Command(205)),
-                (setSafeTime, () => SchneiderProtocol.SafeTime((int)fromHour.Value, (int)toHour.Value))
+                ("Avvia test funzionale (017)", () => Lamp(227), true),
+                ("Avvia test autonomia (017)", () => Lamp(228), true),
+                ("Interrompi test (017)", () => Lamp(229), true),
+                ("Rest (017)", () => Lamp(224), true),
+                ("Inhibit (017)", () => Lamp(225), true),
+                ("Re-Light (017)", () => Lamp(226), true),
+                ("Leggi informazioni centralina (208)", () => SchneiderProtocol.Command(208), false),
+                ("Leggi orologio centralina (008)", () => SchneiderProtocol.Command(8), false),
+                ("Leggi finestra test consentita (205)", () => SchneiderProtocol.Command(205), false),
+                (setSafeTime, () => SchneiderProtocol.SafeTime((int)fromHour.Value, (int)toHour.Value), false)
             ]
         ];
         string? loadedCommand = null;
@@ -390,9 +393,17 @@ internal sealed class MainForm : Form
             loadedCommand = null;
         }
 
-        line.SelectedIndexChanged += (_, _) => InvalidateCommand();
-        number.ValueChanged += (_, _) => InvalidateCommand();
-        operation.SelectedIndexChanged += (_, _) => InvalidateCommand();
+        void UpdateSelection()
+        {
+            InvalidateCommand();
+            bool usesNumber = operation.SelectedIndex >= 0 && groups[function.SelectedIndex][operation.SelectedIndex].UsesNumber;
+            number.Enabled = usesNumber;
+            send.Text = usesNumber ? $"Invia a {line.Text}{Number():00}" : "Invia comando";
+        }
+
+        line.SelectedIndexChanged += (_, _) => UpdateSelection();
+        number.SelectedIndexChanged += (_, _) => UpdateSelection();
+        operation.SelectedIndexChanged += (_, _) => UpdateSelection();
         fromHour.ValueChanged += (_, _) => InvalidateCommand();
         toHour.ValueChanged += (_, _) => InvalidateCommand();
 
@@ -400,7 +411,8 @@ internal sealed class MainForm : Form
         {
             var selected = groups[function.SelectedIndex][operation.SelectedIndex];
             loadedCommand = selected.Format();
-            SendSelected(loadedCommand, $"{selected.Label} · selezione {line.Text}{Number():00}");
+            string target = selected.UsesNumber ? $"lampada {line.Text}{Number():00}" : $"selezione linea {line.Text}";
+            SendSelected(loadedCommand, $"{selected.Label} · {target}");
         };
         AddCompactField(panel, "Banco prova", line);
         AddCompactField(panel, "Numero", number);
