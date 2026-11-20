@@ -847,6 +847,7 @@ internal sealed partial class MainForm : Form
                     _status.Text = progress;
                     await RequestReplyAsync(frame, progress, clear.Token);
                 }
+                if (_installer) TrackInstallerClear(currentLine, address);
             }
             Log($"Clear {target}: tutti i passaggi accettati.");
         }

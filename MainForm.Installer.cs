@@ -27,6 +27,15 @@ internal sealed partial class MainForm
     };
     private readonly Button _installerConfirm = new() { Text = "Conferma laser", AutoSize = true, Visible = false };
     private readonly Button _installerCancel = new() { Text = "Annulla numerazione", AutoSize = true, Visible = false };
+    private readonly TextBox _assignedNumbers = new()
+    {
+        ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical,
+        Height = 54, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 3),
+        BackColor = Color.White, AccessibleName = "Numeri assegnati"
+    };
+    private InstallerAddressHistory _addressHistory = new();
+    private string? _addressHistoryFile;
+    private bool _saveAddressHistory;
     private TaskCompletionSource<bool>? _laserConfirmation;
     private bool _installerAssigning;
     private int _sessionLine;
@@ -62,6 +71,7 @@ internal sealed partial class MainForm
             if (_devices.SelectedItem is not BluetoothDiscovery.Device device) return;
             SetConnectionDevice(device);
             _confirmedTestNcu = device;
+            LoadAddressHistory(device.Mac);
             Log("NCU Test confermata. Premi Connetti per aprire la connessione e fare il login.");
             UpdateInstallerControls();
         };
@@ -94,7 +104,10 @@ internal sealed partial class MainForm
             UpdateInstallerControls();
         };
         UpdateInstallerControls();
-        return CreateSection("Tecnico Installatore", connection, login, centralCommands, addressing, steps);
+        RefreshAddressHistory();
+        var assignedLabel = new Label { Text = "Numeri assegnati", AutoSize = true };
+        return CreateSection("Tecnico Installatore", connection, login, centralCommands, addressing, steps,
+            assignedLabel, _assignedNumbers);
     }
 
     private Button CreateInstallerLightButton(string label, int operation) =>
@@ -143,6 +156,7 @@ internal sealed partial class MainForm
     {
         if (_client is not null) return;
         _confirmedTestNcu = null;
+        LoadAddressHistory(null);
         _devices.Items.Clear();
         _name.Clear();
         _mac.Clear();
@@ -167,6 +181,7 @@ internal sealed partial class MainForm
         if (!string.Equals(device.Mac, profile.Mac, StringComparison.OrdinalIgnoreCase))
         {
             _confirmedTestNcu = null;
+            LoadAddressHistory(null);
             _devices.Items.Clear();
             _name.Clear();
             _mac.Clear();
@@ -302,22 +317,40 @@ internal sealed partial class MainForm
                     await RequestReplyAsync(SchneiderProtocol.SequentialAddress(line, 3, 0),
                         "Chiudi automaticamente la sessione", CancellationToken.None);
                     _sessionOpen = false;
+                    await VerifyInstallerNumbersAsync(line, numbers, client, token.IsCancellationRequested);
                 }
             }
-
-            int updated = 0;
-            foreach (int number in numbers)
-            {
-                if ((await ReadInstallerAddressAsync(line, number, token)).Assigned) updated++;
-            }
-            _status.Text = $"Verifica conclusa · {updated}/{numbers.Length} registrati";
-            Log($"Verifica finale: {updated} di {numbers.Length} numeri risultano registrati.");
         }
         finally
         {
             _installerAssigning = false;
             _laserConfirmation = null;
         }
+    }
+
+    private async Task VerifyInstallerNumbersAsync(int line, int[] numbers, BluetoothRfcommClient client, bool interrupted)
+    {
+        int registered = 0;
+        int verified = 0;
+        foreach (int number in numbers)
+        {
+            if (!ReferenceEquals(_client, client) || !client.Connected || IsDisposed || Disposing) break;
+            try
+            {
+                var status = await ReadInstallerAddressAsync(line, number, CancellationToken.None);
+                verified++;
+                if (status.Assigned) registered++;
+                if (_addressHistory.SetAssigned(status.Index, status.Assigned)) SaveAddressHistory();
+            }
+            catch (IOException ex)
+            {
+                Log($"Verifica finale {InstallerAddress(line, number)} non riuscita: {ex.Message}");
+            }
+        }
+        string result = $"Verifica finale: {registered} registrati, {verified}/{numbers.Length} numeri verificati.";
+        Log(result);
+        if (ReferenceEquals(_client, client) && !IsDisposed && !Disposing)
+            _status.Text = interrupted ? $"Numerazione interrotta · {registered} registrati" : result;
     }
 
     private async Task<LampAddressStatus> ReadInstallerAddressAsync(int line, int number, CancellationToken token)
@@ -334,6 +367,46 @@ internal sealed partial class MainForm
     private void ResetInstallerAddressing()
     {
         _sessionOpen = false;
+    }
+
+    private void LoadAddressHistory(string? mac)
+    {
+        _addressHistory = new InstallerAddressHistory();
+        _addressHistoryFile = mac is null ? null : Path.Combine(Path.GetDirectoryName(NcuProfiles.LocalPath)!,
+            "IndirizziInstallatore", mac.Replace(":", "", StringComparison.Ordinal) + ".json");
+        _saveAddressHistory = _addressHistoryFile is not null;
+        if (_addressHistoryFile is { } file)
+        {
+            try { _addressHistory = InstallerAddressHistory.Read(file); }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                _saveAddressHistory = false;
+                Log($"Elenco locale indirizzi non caricato: {ex.Message}");
+            }
+        }
+        RefreshAddressHistory();
+    }
+
+    private void RefreshAddressHistory() =>
+        _assignedNumbers.Lines = [_addressHistory.FormatLine(0), _addressHistory.FormatLine(1)];
+
+    private void SaveAddressHistory()
+    {
+        if (!IsDisposed && !Disposing) RefreshAddressHistory();
+        if (!_saveAddressHistory || _addressHistoryFile is not { } file) return;
+        try { _addressHistory.Save(file); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log($"Elenco locale indirizzi non salvato: {ex.Message}");
+        }
+    }
+
+    private void TrackInstallerClear(int line, int? address)
+    {
+        bool changed = address is int number
+            ? _addressHistory.SetAssigned(line * 64 + number, assigned: false)
+            : _addressHistory.ClearLine(line);
+        if (changed) SaveAddressHistory();
     }
 
     private Task<string> RequestReplyAsync(string frame, string operation, CancellationToken token) =>
