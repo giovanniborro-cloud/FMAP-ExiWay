@@ -85,6 +85,7 @@ internal sealed partial class MainForm
     private Task ConnectInstallerAsync() => RunInstallerAsync(async token =>
     {
         if (_client is not null) return;
+        _profiles = File.Exists(NcuProfiles.LocalPath) ? NcuProfiles.Read(NcuProfiles.LocalPath) : [];
         var testProfiles = _profiles.Where(profile => profile.Building.Equals("TEST", StringComparison.OrdinalIgnoreCase)).ToList();
         var macs = testProfiles.Select(profile => profile.Mac).Distinct(StringComparer.Ordinal).ToList();
         if (macs.Count != 1)
@@ -98,20 +99,21 @@ internal sealed partial class MainForm
             while (_client?.Connected != true)
             {
                 _status.Text = "Ricerca centralina Test…";
-                Log($"Ricerca Bluetooth della centralina Test [{mac}].");
-                var devices = await Task.Run(BluetoothDiscovery.Scan, token);
+                Log($"Cerca NCU · MAC richiesto dal profilo con Palazzo TEST: {mac}.");
+                var devices = await ScanControllersAsync(token);
                 token.ThrowIfCancellationRequested();
-                var detected = devices.FirstOrDefault(device => device.Mac == mac);
+                var detected = devices.FirstOrDefault(device =>
+                    string.Equals(device.Mac, mac, StringComparison.OrdinalIgnoreCase));
                 if (detected is not null)
                 {
-                    Log($"MAC di Test presente nei risultati della ricerca. Verifica tramite connessione RFCOMM a {mac}.");
-                    defaultPassword = new[] { detected.Name }
-                        .Concat(testProfiles.Select(profile => profile.BluetoothName))
-                        .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
-                        .Select(SchneiderProtocol.DefaultPassword)
-                        .FirstOrDefault(password => password is not null) ?? defaultPassword;
-                    _mac.Text = mac;
-                    _name.Text = detected.Name.Length > 0 ? detected.Name : testProfiles[0].Name;
+                    SetConnectionDevice(detected);
+                    defaultPassword = string.IsNullOrEmpty(_password.Text)
+                        ? testProfiles.Select(profile => profile.BluetoothName)
+                            .Concat(_profiles.Where(profile => profile.Mac == mac).Select(profile => profile.Name))
+                            .Select(SchneiderProtocol.DefaultPassword)
+                            .FirstOrDefault(password => password is not null)
+                        : _password.Text;
+                    Log($"Connetti RFCOMM 1 · MAC di Test confermato: {detected.Mac}.");
                     await ConnectAsync(token);
                     token.ThrowIfCancellationRequested();
                     if (_client?.Connected == true) break;
@@ -143,7 +145,7 @@ internal sealed partial class MainForm
             }
             else Log("Uso il login già confermato in modalità Esperto.");
 
-            await RequestReplyAsync(loginFrame, "Login automatico Test", token);
+            await RequestReplyAsync(loginFrame, "Login 323 · connessione RFCOMM 1 aperta", token);
             token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;
             _status.Text = "Test connessa · login confermato";
@@ -194,7 +196,8 @@ internal sealed partial class MainForm
             Log("Operazione interrotta.");
             if (_client is null && !IsDisposed && !Disposing) _status.Text = "Disconnesso";
         }
-        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or ArgumentException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException or
+            System.ComponentModel.Win32Exception or ArgumentException)
         {
             Log($"Operazione non completata: {ex.Message}");
             if (_client is null) _status.Text = "Disconnesso";

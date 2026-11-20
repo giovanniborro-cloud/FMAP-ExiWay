@@ -655,28 +655,35 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    private async Task<List<BluetoothDiscovery.Device>> ScanControllersAsync(CancellationToken token)
+    {
+        var scanned = await Task.Run(BluetoothDiscovery.Scan, token);
+        token.ThrowIfCancellationRequested();
+        var list = scanned.Select(WithSavedName)
+            .OrderByDescending(device => device.IsNcu)
+            .ThenBy(device => device.Paired)
+            .ThenBy(device => device.DisplayName.Length == 0)
+            .ThenBy(device => device.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        foreach (var device in list)
+            Log($"Bluetooth rilevato: {device} / connesso={device.Connected}");
+        Log($"Trovati {list.Count} dispositivi Bluetooth Classic, di cui {list.Count(device => !device.Paired)} non associati.");
+        return list;
+    }
+
     private async Task ScanAsync()
     {
         _scan.Enabled = false;
         _status.Text = "Ricerca Bluetooth Classic, anche non associati…";
         try
         {
-            var scanned = await Task.Run(BluetoothDiscovery.Scan);
+            var list = await ScanControllersAsync(CancellationToken.None);
             if (IsDisposed || Disposing) return;
-            var list = scanned.Select(WithSavedName)
-                .OrderByDescending(device => device.IsNcu)
-                .ThenBy(device => device.Paired)
-                .ThenBy(device => device.DisplayName.Length == 0)
-                .ThenBy(device => device.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
             _devices.Items.Clear();
             _devices.Items.AddRange(list.ToArray());
             _devices.SelectedIndex = _connect.Enabled
                 ? list.FindIndex(device => device.IsNcu)
                 : list.FindIndex(device => device.Mac == _connectedMac);
-            foreach (var device in list)
-                Log($"Bluetooth rilevato: {device} / connesso={device.Connected}");
-            Log($"Trovati {list.Count} dispositivi Bluetooth Classic, di cui {list.Count(device => !device.Paired)} non associati.");
             if (_devices.SelectedIndex < 0 && list.Count > 0)
                 Log("Nessun nome NCU riconosciuto. Seleziona il dispositivo corrispondente al MAC della centralina.");
             _status.Text = "Ricerca completata";
@@ -689,6 +696,11 @@ internal sealed partial class MainForm : Form
     {
         if (_refreshingDeviceNames || !_connect.Enabled ||
             _devices.SelectedItem is not BluetoothDiscovery.Device item) return;
+        SetConnectionDevice(item);
+    }
+
+    private void SetConnectionDevice(BluetoothDiscovery.Device item)
+    {
         _name.Text = item.DisplayName;
         _password.Text = SchneiderProtocol.DefaultPassword(item.Name)
             ?? SchneiderProtocol.DefaultPassword(item.DisplayName) ?? "";
