@@ -13,9 +13,18 @@ internal sealed partial class MainForm
     private readonly ComboBox _installerFirst = CreateInstallerNumber(0);
     private readonly ComboBox _installerSecond = CreateInstallerNumber(1);
     private readonly CheckBox _installerUseSecond = new() { Text = "Secondo numero", AutoSize = true };
+    private readonly FlowLayoutPanel _installerCentralCommands = CreateCompactRow();
     private readonly Button _installerReset = new() { Text = "Azzera centrale", AutoSize = true };
-    private readonly Button _installerDelete = new() { Text = "Cancella un numero", AutoSize = true };
-    private readonly Button _installerAssign = new() { Text = "Assegna numeri", AutoSize = true };
+    private readonly Button _installerDelete = new()
+    {
+        Text = "Cancella numero", AutoSize = true, FlatStyle = FlatStyle.Flat,
+        UseVisualStyleBackColor = false, BackColor = Color.FromArgb(180, 35, 24), ForeColor = Color.White
+    };
+    private readonly Button _installerAssign = new()
+    {
+        Text = "Assegna numero", AutoSize = true, FlatStyle = FlatStyle.Flat,
+        UseVisualStyleBackColor = false, BackColor = Color.FromArgb(20, 108, 67), ForeColor = Color.White
+    };
     private readonly Button _installerConfirm = new() { Text = "Conferma laser", AutoSize = true, Visible = false };
     private readonly Button _installerCancel = new() { Text = "Annulla numerazione", AutoSize = true, Visible = false };
     private TaskCompletionSource<bool>? _laserConfirmation;
@@ -47,7 +56,7 @@ internal sealed partial class MainForm
         var login = CreateCompactRow();
         AddCompactField(login, "UID", _name);
         AddCompactField(login, "Password app", _password);
-        login.Controls.AddRange([_connect, _disconnect, _installerReset]);
+        login.Controls.AddRange([_connect, _disconnect]);
         _confirmTestNcu.Click += (_, _) =>
         {
             if (_devices.SelectedItem is not BluetoothDiscovery.Device device) return;
@@ -56,8 +65,16 @@ internal sealed partial class MainForm
             Log("NCU Test confermata. Premi Connetti per aprire la connessione e fare il login.");
             UpdateInstallerControls();
         };
+        AddCompactField(_installerCentralCommands, "Linea", _installerLine);
+        _installerCentralCommands.Controls.AddRange([
+            CreateInstallerLightButton("Accendi", 5),
+            CreateInstallerLightButton("Spegni", 0),
+            CreateInstallerLightButton("Identifica", 240),
+            _installerReset
+        ]);
+        var centralCommands = CreateSection("Comandi centralina", _installerCentralCommands);
+
         var addressing = CreateCompactRow();
-        AddCompactField(addressing, "Linea", _installerLine);
         AddCompactField(addressing, "Numero", _installerFirst);
         addressing.Controls.Add(_installerUseSecond);
         AddCompactField(addressing, "Numero 2", _installerSecond);
@@ -77,8 +94,15 @@ internal sealed partial class MainForm
             UpdateInstallerControls();
         };
         UpdateInstallerControls();
-        return CreateSection("Tecnico Installatore", connection, login, addressing, steps);
+        return CreateSection("Tecnico Installatore", connection, login, centralCommands, addressing, steps);
     }
+
+    private Button CreateInstallerLightButton(string label, int operation) =>
+        CreateLightButton(label, operation, () =>
+        {
+            int line = _installerLine.SelectedIndex;
+            SendSelected(SchneiderProtocol.LineCommand(line, operation), $"{label} · tutta la linea {_installerLine.Text}");
+        });
 
     private void UpdateInstallerControls()
     {
@@ -93,8 +117,8 @@ internal sealed partial class MainForm
             ? _installerWork?.IsCancellationRequested == false
             : idle && _client is not null;
         _disconnect.Text = _installerConnecting ? "Annulla connessione" : "Disconnessione";
-        _installerReset.Enabled = _installerDelete.Enabled = _installerAssign.Enabled = ready && !_sessionOpen;
-        _installerLine.Enabled = _installerFirst.Enabled = _installerUseSecond.Enabled = ready && !_sessionOpen;
+        _installerCentralCommands.Enabled = _installerDelete.Enabled = _installerAssign.Enabled = ready && !_sessionOpen;
+        _installerFirst.Enabled = _installerUseSecond.Enabled = ready && !_sessionOpen;
         _installerSecond.Enabled = ready && !_sessionOpen && _installerUseSecond.Checked;
         _installerConfirm.Visible = _laserConfirmation is not null;
         _installerConfirm.Enabled = _laserConfirmation is { Task.IsCompleted: false } &&

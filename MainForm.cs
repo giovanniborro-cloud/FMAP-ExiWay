@@ -506,19 +506,24 @@ internal sealed partial class MainForm : Form
 
     private void AddLineCommand(FlowLayoutPanel panel, string label, int operation)
     {
-        var icon = LampCommandIcon.Create(operation);
-        var button = new Button { Image = icon, Size = new Size(34, 29), AccessibleName = label };
-        _lightTips.SetToolTip(button, label);
-        button.Disposed += (_, _) => icon.Dispose();
-        button.Click += (_, _) =>
+        panel.Controls.Add(CreateLightButton(label, operation, () =>
         {
             if (_lineTarget.SelectedIndex != 1 &&
                 !SendSelected(SchneiderProtocol.LineCommand(0, operation), $"{label} · tutta la linea A"))
                 return;
             if (_lineTarget.SelectedIndex != 0)
                 SendSelected(SchneiderProtocol.LineCommand(1, operation), $"{label} · tutta la linea B");
-        };
-        panel.Controls.Add(button);
+        }));
+    }
+
+    private Button CreateLightButton(string label, int operation, Action onClick)
+    {
+        var icon = LampCommandIcon.Create(operation);
+        var button = new Button { Image = icon, Size = new Size(34, 29), AccessibleName = label };
+        _lightTips.SetToolTip(button, label);
+        button.Disposed += (_, _) => icon.Dispose();
+        button.Click += (_, _) => onClick();
+        return button;
     }
 
     private bool SendSelected(string frame, string operation)
