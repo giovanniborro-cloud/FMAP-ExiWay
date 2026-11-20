@@ -1,6 +1,6 @@
 # Installazione OVA-GEN3
 
-Sorgenti della build Release: commit `4e3c11e`.
+Sorgenti della build Release: commit `33aa244`.
 
 | Tipo di Windows | Pacchetto |
 | --- | --- |
@@ -12,3 +12,5 @@ Sorgenti della build Release: commit `4e3c11e`.
 3. Avvia `SchneiderLoader.exe` dalla cartella estratta.
 
 Il runtime .NET Desktop è incluso. La cartella va mantenuta intera. Per Windows 10 Home su Intel Atom x5-Z8350 è ancora da verificare sul PC l'avvio e la connessione Bluetooth al controller.
+
+La rubrica NCU è salvata in `%LOCALAPPDATA%\OVA-GEN3\centrali-ncu.json`. Per trasferirla su un altro PC, usa **Esporta JSON** e poi **Importa JSON** nell'altra installazione.
