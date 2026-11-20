@@ -182,7 +182,6 @@ internal sealed partial class MainForm
             token.ThrowIfCancellationRequested();
             if (_client?.Connected != true) return;
 
-            Log("Login 323.");
             await WaitForReplyAsync("323", () => LoginAsync(token), token);
             token.ThrowIfCancellationRequested();
             _installerAuthenticated = true;

@@ -44,7 +44,7 @@ internal sealed partial class MainForm : Form
     private Control _benchCommands = new Panel();
     private bool _logWriteFailed;
     private readonly Label _status = new() { AutoSize = true, Text = "Disconnesso" };
-    private static readonly TimeSpan LoginSettleTime = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan LoginSettleTime = TimeSpan.FromSeconds(5);
     private long _connectedAt;
     private BluetoothRfcommClient? _client;
     private CancellationTokenSource? _reading;
@@ -654,7 +654,9 @@ internal sealed partial class MainForm : Form
             TimeSpan remaining = LoginSettleTime - System.Diagnostics.Stopwatch.GetElapsedTime(_connectedAt);
             if (remaining > TimeSpan.Zero)
             {
-                Log("Attendo la stabilizzazione del canale RFCOMM prima del login 323.");
+                int seconds = (int)Math.Ceiling(remaining.TotalSeconds);
+                _status.Text = $"Stabilizzazione RFCOMM · attesa {seconds} s";
+                Log($"Stabilizzazione RFCOMM: attendo {seconds} s prima di inviare il login 323.");
                 await Task.Delay(remaining, token);
             }
             token.ThrowIfCancellationRequested();
